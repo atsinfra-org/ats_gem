@@ -18,8 +18,9 @@ Conventions:
 |---|---|
 | `20260924165237_init_foundation` (Phase 0) | extensions `pg_trgm`, `citext`, `unaccent`; `app_settings` |
 | `20260924173053_phase1_platform_plumbing` (Phase 1) | `outbox_events`, `job_schedules`, `tender_sources`, `crawl_runs`, `tenders` (ingestion subset), `tender_source_records`; enums `source_type`, `source_health_status`, `crawl_trigger`, `crawl_run_status`, `tender_lifecycle`, `tender_status`; CHECK constraints below |
+| `20260925073540_phase2_backend_foundation` (Phase 2) | `users`, `user_identities`, `sessions`, `auth_tokens`, `roles`, `permissions`, `role_permissions`, `user_roles`, `organizations`, `organization_members`, `organization_invitations`, `states`, `districts`, `categories`, `tender_types`, `stored_files`, `tender_documents`, `saved_searches`, `watchlist_items`, `notifications`, `audit_logs`; optional taxonomy columns added to `tenders`; enums `user_status`, `auth_provider`, `auth_token_type`, `organization_role`, `state_type`, `storage_provider`, `tender_document_type`, `tender_document_status`, `procurement_type`; CHECK constraints below |
 
-Both migrations only add objects. CI applies them to an empty database and fails on any drift between
+All three migrations only add objects. CI applies them to an empty database and fails on any drift between
 `schema.prisma` and the migrated database (`prisma migrate diff --exit-code`).
 
 Phase 1 tables as built (full column lists in `prisma/schema.prisma`), and how they differ from the
@@ -34,13 +35,36 @@ target design in the sections below:
 | `tenders` | ingestion subset of §4: reference number (+ normalized), title, description, department, `state_code`, city, location text, `estimated_value`/`emd_amount`/`tender_fee` `NUMERIC(18,2)`, `currency`, published/closing/opening times, `lifecycle`, `status` + `status_computed_at`, `primary_source_url`, `last_synced_at`, soft delete | CHECK money `>= 0`; CHECK `closing_at >= published_at`; CHECK `currency ~ '^[A-Z]{3}$'`; CHECK `state_code ~ '^[A-Z]{2}$'`; indexes `(status, closing_at)`, `(published_at DESC)`, `(reference_number_normalized)` |
 | `tender_source_records` | as §4 | `UNIQUE(source_id, external_tender_id)`; CHECK `payload_hash ~ '^[0-9a-f]{64}$'`; index `(tender_id)` |
 
-Deliberately not yet built, arriving with their phases as additive migrations: taxonomy FKs,
-`slug`, `procuring_entity_id` and the `(procuring_entity_id, reference_number_normalized)` partial
-unique (Phase 3); the "closing_at required for ACTIVE" CHECK (Phase 3, once real-portal data rules
-are settled — some portals publish without a deadline); `search_vector` (Phase 4); partial indexes
-(`WHERE deleted_at IS NULL`, need raw SQL or Prisma's `partialIndexes` preview), `tender_versions`
-and `duplicate_candidates` (Phase 3); `source_credentials`, `source_sessions`, `crawl_run_events`
-(Phase 5).
+Phase 2 tables as built — see §1/§2/§3/§6/§7/§9 below for full column lists; differences from the
+target design:
+
+| Table | As built | Database constraints |
+|---|---|---|
+| `users` | as §1 | `UNIQUE(email)` on `CITEXT` — **plain, not partial** on `deleted_at IS NULL` (see below) |
+| `organizations` | as §2, minus `organization_documents` (KYC uploads — not built; see below) | `UNIQUE(slug)`, `UNIQUE(gstin)` — both plain, not partial; CHECK GSTIN/PAN format |
+| `organization_members` | as §2 | PK `(organization_id, user_id)`; "exactly one OWNER" enforced in `OrganizationsService`, not a DB constraint |
+| `categories` | as §3, plus `is_active` (prompt-requested) | CHECK a category is never its own parent |
+| `tender_documents` | as §6, using the fuller status enum (`PENDING, DOWNLOADED, PROCESSING, PROCESSED, FAILED, QUARANTINED`) rather than the API's simplified 3-state one; `supersedes_id` and `source_record_id` are plain UUID columns, not FKs (nothing queries them yet) | `UNIQUE(tender_id, file_id)`; index `(tender_id, document_type)`, `(status)` |
+| `stored_files` | as §6 | `UNIQUE(checksum_sha256)` |
+| `saved_searches` | criteria as a JSONB blob (validated at the API layer against the same shape `GET /search/tenders` accepts), scoped to `organization_id` per ADR-06 | index `(organization_id)` |
+| `watchlist_items` | scoped to `user_id`, not `organization_id` (a personal shortlist) | `UNIQUE(user_id, tender_id)`; index `(tender_id)` |
+| `notifications` | `type` is free text, not an enum (open-ended set — see conventions above) | index `(user_id, is_read, created_at DESC)` |
+| `audit_logs` | as §9 | index `(resource_type, resource_id)`, `(actor_user_id, created_at DESC)`, `(action, created_at DESC)` |
+
+**Partial unique indexes remain deferred** (need raw SQL or Prisma's `partialIndexes` preview flag —
+see below): `users.email`, `organizations.slug`/`gstin`, and "one OWNER per org" / "one pending
+invite per (org, email)" would all ideally exclude soft-deleted/superseded rows. Until then, a
+soft-deleted user's email or a soft-deleted organization's slug/GSTIN cannot be reused, and the
+"exactly one" invariants are application-enforced only (same trade-off already accepted for
+`tender_sources.slug` in Phase 1).
+
+Deliberately not yet built, arriving with their phases as additive migrations: `procuring_entity_id`
+and the `(procuring_entity_id, reference_number_normalized)` partial unique on `tenders` (Phase 3);
+the "closing_at required for ACTIVE" CHECK (Phase 3, once real-portal data rules are settled — some
+portals publish without a deadline); `search_vector` (Phase 4); `tender_versions` and
+`duplicate_candidates` (Phase 3); `source_credentials`, `source_sessions`, `crawl_run_events`
+(Phase 5); `document_contents`, `document_archives`, `organization_documents` (KYC uploads — Phase 6);
+`districts` beyond the bare table (no LGD dataset seeded yet).
 
 ---
 
@@ -130,6 +154,32 @@ Indexes (from real query patterns, all partial `WHERE deleted_at IS NULL`):
 
 Scale note: `raw_payload` grows fastest. Past ~50 M rows or 500 GB, move raw payloads to object storage (keep the hash in Postgres) or partition `tender_source_records` by `first_seen_at` month.
 
+### 4.1 Phase 3 as built — deviations from the target design above
+- `duplicate_candidates.status` is `PENDING | CONFIRMED | REJECTED | AUTO_CONFIRMED` (not the
+  `PENDING | MERGED | REJECTED` sketched above) — `AUTO_CONFIRMED` distinguishes an engine auto-link
+  from an admin-confirmed one, and `CONFIRMED` (not `MERGED`) matches what actually happens: the
+  losing tender is archived, never merged/deleted (docs/ARCHITECTURE.md §18.3/§18.8).
+- `tenders.source_status_raw` (TEXT, nullable) was added, not in the original sketch — preserves the
+  portal's literal status text alongside `lifecycle` (§18.5).
+- `tenders.duplicate_of_id` (UUID FK, self-referential, `ON DELETE SET NULL`) was added — set when a
+  `DuplicateCandidate` is `CONFIRMED` (§18.8).
+- Four tables not listed above were added, all under `docs/ARCHITECTURE.md §18`:
+  - `procuring_entities` (`name`, `name_normalized`, `entity_type`, `parent_id`, `state_code`,
+    `district_id`, `status ENUM(ACTIVE, MERGED, INACTIVE)`, `merged_into_id`) —
+    `UNIQUE(name_normalized, state_code)`, GIN trigram index on `name_normalized`.
+  - `procuring_entity_aliases` (`procuring_entity_id FK`, `alias`, `alias_normalized`) —
+    `UNIQUE(alias_normalized)`.
+  - `source_entity_mappings` (`source_id FK`, `source_entity_name`, `source_entity_normalized`,
+    `procuring_entity_id FK NULL`, `confidence NUMERIC(4,3)`, `method ENUM(EXACT_SOURCE_MAPPING,
+    EXACT_NORMALIZED_NAME, ALIAS, FUZZY, MANUAL)`, `verification_status ENUM(UNVERIFIED, VERIFIED,
+    REJECTED)`) — `UNIQUE(source_id, source_entity_normalized)`.
+  - `tender_quality_issues` (`tender_id FK`, `source_record_id`, `severity ENUM(INFO, WARNING,
+    ERROR)`, `code`, `message`, `resolved_at`) — indexes `(tender_id)`, `(severity, resolved_at)`.
+- Partial unique indexes actually added this phase (raw SQL, §18.12): `UNIQUE(organization_id) WHERE
+  role = 'OWNER'` on `organization_members`; `UNIQUE(organization_id, email) WHERE accepted_at IS
+  NULL` on `organization_invitations`. `users.email` / `organizations.slug`/`gstin` stay plain-unique
+  for now (§18.12 explains why).
+
 ## 5. Sources & crawling
 
 | Table | Key columns | Constraints / indexes |
@@ -148,6 +198,31 @@ Scale note: `raw_payload` grows fastest. Past ~50 M rows or 500 GB, move raw pay
 | `tender_documents` | `tender_id FK`, `file_id FK`, `document_type ENUM(NIT, TENDER_DOCUMENT, BOQ, CORRIGENDUM, TECHNICAL_SPEC, ELIGIBILITY, ADDENDUM, TERMS, DRAWING, OTHER)`, `file_name`, `version INT`, `supersedes_id NULL`, `source_url`, `source_record_id`, `downloaded_at`, `processed_at`, `status ENUM(PENDING, DOWNLOADED, PROCESSING, PROCESSED, FAILED, QUARANTINED)`, `failure_reason`, soft delete | `UNIQUE(tender_id, file_id)`; index `(tender_id, document_type)`, `(status)` |
 | `document_contents` | `file_id FK UNIQUE`, `text TEXT`, `page_count`, `language`, `ocr_used`, `extraction_ms` | keyed by file so identical PDFs are processed once |
 | `document_archives` | `tender_id`, `requested_by`, `file_id NULL`, `status`, `expires_at` | "Download all" zip bundles |
+
+### 6.1 Phase 4 as built
+`stored_files`/`tender_documents` (above) are now backed by a real `StorageProvider` abstraction and
+`DocumentsService` (docs/ARCHITECTURE.md §19.4/19.5): checksum-based dedupe, `supersedesId`-chained
+versioning, and a new `tender_documents.source_document_id` column (a source's own document
+identifier, independent of `source_url`). `document_contents` (OCR/text-extraction) and
+`document_archives` ("download all" zip bundles) remain **unbuilt target design, not Phase 4 scope**
+- `document_contents` in particular is explicitly excluded since OCR/text-extraction is prohibited
+this phase; both stay documented here as the pre-existing target for whichever future phase adds
+them.
+
+Phase 4 also added three new tables, all under docs/ARCHITECTURE.md §19:
+- `tender_requirements` (`tender_id FK`, `type ENUM(ELIGIBILITY, FINANCIAL, TECHNICAL, EXPERIENCE,
+  LEGAL, REGISTRATION, DOCUMENTATION, LOCATION, PERSONNEL, EQUIPMENT, OTHER)`, `title`, `description`,
+  `value NUMERIC(18,2) NULL`, `unit`, `is_mandatory`, `source_reference`) — index `(tender_id, type)`,
+  CHECK `value >= 0`.
+- `tender_events` (`tender_id FK`, `event_type ENUM(PUBLISHED, DOCUMENT_AVAILABLE,
+  CLARIFICATION_OPENED, PRE_BID_MEETING, CLARIFICATION_CLOSED, SUBMISSION_OPENED,
+  SUBMISSION_DEADLINE, OPENING, EXTENDED, CORRIGENDUM, CANCELLED, AWARDED, OTHER)`, `event_at
+  TIMESTAMPTZ NULL`, `title`, `description`, `source_reference`) — `UNIQUE(tender_id, event_type,
+  event_at)` (duplicate-event prevention), index `(tender_id, event_at)`.
+- `tender_corrigenda` (`tender_id FK`, `source_id FK NULL`, `source_reference`, `title`,
+  `description`, `published_at`, `effective_at NULL`, `source_url`, `document_id FK NULL` →
+  `tender_documents`, `affected_fields JSONB`) — index `(tender_id, published_at)`, CHECK
+  `effective_at >= published_at`.
 
 ## 7. User features
 

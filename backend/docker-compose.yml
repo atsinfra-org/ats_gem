@@ -33,10 +33,14 @@ x-app-env: &app-env
   S3_ACCESS_KEY: ${COMPOSE_MINIO_USER:-ats_gem}
   S3_SECRET_KEY: ${COMPOSE_MINIO_PASSWORD:-ats_gem_dev_minio}
   S3_FORCE_PATH_STYLE: "true"
-  # Phase 1 records emails in the logs (masked); SMTP delivery via Mailpit arrives in Phase 2.
+  # Phase 1 records emails in the logs (masked); SMTP delivery via Mailpit arrives in Phase 7.
   EMAIL_DRIVER: log
   SMTP_HOST: mailpit
   SMTP_PORT: "1025"
+  # Dev-only secret (override with your own via a .env file next to docker-compose.yml if you want
+  # tokens issued by one `docker compose up` to survive a `down`/`up` with a different value).
+  JWT_SECRET: ${JWT_SECRET:-ats-gem-local-development-secret-do-not-use-in-production-00000}
+  COOKIE_SECURE: "false"
 
 services:
   postgres:

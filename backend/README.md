@@ -103,8 +103,15 @@ for the full list. Notable ones:
 | `OUTBOX_*` | see `.env.example` | relay on/off, poll interval, batch size, retention |
 | `SCHEDULER_SYNC_INTERVAL_MS` | `60000` | how often schedules are reconciled into BullMQ |
 | `HEALTH_PORT` | worker `4001`, scheduler `4002` | health server for non-API processes (`0` = any free port) |
-| `EMAIL_DRIVER` | `log` | `smtp` arrives in Phase 2 |
+| `EMAIL_DRIVER` | `log` | `smtp` arrives in Phase 7 |
 | `SEARCH_PROVIDER` | `postgres` | `opensearch` indexing arrives in Phase 4 (the worker refuses to boot with it until then) |
+| `JWT_SECRET` | *(required, no default)* | HS256 signing secret for access tokens, ≥32 chars — boot fails without it |
+| `JWT_ACCESS_TTL` | `15m` | access token lifetime (`Ns`/`Nm`/`Nh`/`Nd`) |
+| `REFRESH_TOKEN_TTL_DAYS` | `30` | opaque refresh token lifetime; the token itself lives only in a hashed `sessions` row |
+| `REFRESH_COOKIE_NAME` | `atsgem_rt` | httpOnly cookie name, scoped to `/api/v1/auth` |
+| `COOKIE_SECURE` | `true` in production, `false` otherwise | cookie `Secure` flag |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_LOCKOUT_WINDOW_MINUTES` | `10` / `15` | Redis-backed login lockout, per IP and per account |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset | Google OAuth is schema-ready but has no route yet (Phase 2 stub) — these are unused |
 
 ## Scripts
 | Script | Purpose |
@@ -120,6 +127,18 @@ for the full list. Notable ones:
 | `npm run db:deploy` | Apply migrations in CI/production (never on app boot) |
 | `npm run db:seed` | Idempotent seed (needs a build) |
 | `npm run db:generate` / `db:studio` | Regenerate client / browse data |
+
+## Seed data
+`npm run db:seed` (or `docker compose run --rm seed`) is idempotent — it only creates what is missing
+and never overwrites something an admin changed. It seeds:
+- **Every environment**: staff roles + permissions and their default grants, the 28 states + 8 UTs,
+  the tender types, a starter category tree, and the platform job schedules.
+- **Non-production**: the deterministic mock crawl source (`mock-portal`).
+- **`NODE_ENV=development` only**: demo accounts `admin@dev.atsgem.local` (SUPER_ADMIN) and
+  `member@dev.atsgem.local`, a shared organization, one clearly labelled `[DEV SEED]` tender, a saved
+  search and a bookmark. Their passwords are **randomly generated on the run that creates them and
+  printed once** in the command output (stored only as Argon2id hashes) — there is no default
+  credential. Lose one? Use `/auth/forgot-password`, or wipe the dev database and re-seed.
 
 ## Testing
 - **Unit** tests need nothing running.
@@ -151,7 +170,11 @@ database + schema-drift check → e2e (PostgreSQL + Redis service containers) �
 | GET | `/health/queues` | per-queue counts, paused, consumers, oldest waiting job → 200 or 503 (internal; moves behind staff auth in Phase 5) |
 | GET | `/api/docs` | Swagger UI (when `SWAGGER_ENABLED=true`) |
 
-All other routes live under `/api/v1` and use the response envelope from the API contract.
+Every other route lives under `/api/v1`, uses the response envelope from the API contract, and
+requires a bearer access token unless documented as public — see
+[docs/API-CONTRACT.md](./docs/API-CONTRACT.md) for the full, up-to-date list (auth, `/me`,
+organizations, `/meta`, tender search/detail, saved searches, watchlist, notifications) and which
+rows are still Phase 3+ only.
 
 ## Project layout
 ```text
@@ -171,6 +194,14 @@ src/
   crawler/                            adapter contract, mock adapter, normalization, ingestion, handlers
   search/ · email/                    indexing and email job handlers (pluggable providers)
   modules/health/                     liveness, readiness, queue health
+  auth/                               JWT + opaque refresh tokens, sessions, Argon2id, login throttle
+  rbac/                               staff permissions guard, organization-role guard, constants
+  audit/                              append-only audit log service (global)
+  users/ · organizations/             /me, personal + team organizations, invitations, org switch
+  taxonomy/                           /meta states, categories, tender types (seeded reference data)
+  tenders/                            /search/tenders + /tenders/:id (indexed filters, not the search engine)
+  saved-searches/ · watchlist/        organization-scoped saved searches, per-user bookmarks
+  notifications/                      in-app notification records (no delivery yet)
   generated/prisma/                   Prisma client (generated, git-ignored)
 prisma/  schema.prisma · migrations/  (prisma7.config.ts at the root)
 test/    e2e tests + support (test DB, Redis gating, config overrides)
@@ -191,6 +222,9 @@ test/    e2e tests + support (test DB, Redis gating, config overrides)
 - **BullMQ 6** supports Redis ≥ 5 (6.2+ recommended; Compose and CI use 7) and requires
   `maxmemory-policy noeviction` so queue keys are never evicted (set in `docker-compose.yml`; set
   the same parameter group value on ElastiCache).
+- **Password hashing** uses `@node-rs/argon2` (napi-rs), not the more common `argon2` (node-pre-gyp)
+  package: it ships a prebuilt `linux-x64-musl` binary, so it installs and runs on `node:24-alpine`
+  without a C++ build step in the image.
 
 ## Troubleshooting
 | Symptom | Cause | Fix |

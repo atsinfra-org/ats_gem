@@ -12,6 +12,8 @@ export const DOMAIN_EVENT_SCHEMAS = {
   'tender.created': z.object({ tenderId: uuid, sourceId: uuid.nullable() }),
   'tender.updated': z.object({ tenderId: uuid, changedFields: z.array(z.string()).min(1) }),
   'tender.closed': z.object({ tenderId: uuid, closedAt: z.iso.datetime() }),
+  /** A new source started tracking an existing canonical tender (Phase 3 deduplication - exact or auto-linked match). */
+  'tender.source_linked': z.object({ tenderId: uuid, sourceId: uuid, outcome: z.enum(['exact', 'auto-link']) }),
   'document.created': z.object({ documentId: uuid, tenderId: uuid }),
   'user.created': z.object({ userId: uuid }),
   'organization.created': z.object({ organizationId: uuid, ownerUserId: uuid }),
@@ -39,6 +41,7 @@ export const DOMAIN_EVENT_AGGREGATES: {
   'tender.created': { type: 'tender', id: (p) => p.tenderId },
   'tender.updated': { type: 'tender', id: (p) => p.tenderId },
   'tender.closed': { type: 'tender', id: (p) => p.tenderId },
+  'tender.source_linked': { type: 'tender', id: (p) => p.tenderId },
   'document.created': { type: 'document', id: (p) => p.documentId },
   'user.created': { type: 'user', id: (p) => p.userId },
   'organization.created': { type: 'organization', id: (p) => p.organizationId },

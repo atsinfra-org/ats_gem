@@ -78,6 +78,30 @@ export const envSchema = z.object({
   S3_FORCE_PATH_STYLE: booleanString.default(false),
 
   FRONTEND_URL: z.url().default('http://localhost:3000'),
+
+  // Authentication (Phase 2)
+  /** HS256 signing secret for access tokens. Required everywhere; never a default. */
+  JWT_SECRET: z.string().min(32, 'must be at least 32 characters — generate with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'base64url\'))"'),
+  JWT_ACCESS_TTL: z.string().regex(/^\d+[smhd]$/, 'expected a duration like "15m", "1h" or "30s"').default('15m'),
+  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  /** Name of the httpOnly refresh-token cookie, scoped to /api/v1/auth. */
+  REFRESH_COOKIE_NAME: z.string().min(1).default('atsgem_rt'),
+  /** Cookie Secure flag. Unset: true in production, false otherwise (dev over plain HTTP). */
+  COOKIE_SECURE: booleanString.optional(),
+  /** Google OAuth is a documented Phase 2 stub: routes exist but return CHANNEL_NOT_AVAILABLE
+   * until these are set. Real values are never required to boot. */
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_REDIRECT_URI: z.url().optional(),
+
+  // Login protection (Redis-backed sliding window; docs/ARCHITECTURE.md §5.3)
+  LOGIN_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(10),
+  LOGIN_LOCKOUT_WINDOW_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
+
+  // Per-IP limit on the unauthenticated auth endpoints (register, forgot/reset password) —
+  // docs/API-CONTRACT.md §1.5 "Auth endpoints: 10 req/15 min/IP". Login has its own failure-based lockout.
+  RATE_LIMIT_AUTH_MAX: z.coerce.number().int().min(1).max(1_000_000).default(10),
+  RATE_LIMIT_AUTH_WINDOW_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
 });
 
 export type Env = z.infer<typeof envSchema>;

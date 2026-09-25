@@ -3,6 +3,7 @@ import { EnvValidationError, validateEnv } from './env.schema';
 const base = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
   REDIS_URL: 'redis://localhost:6379/0',
+  JWT_SECRET: 'a'.repeat(32),
 };
 
 describe('validateEnv', () => {
@@ -29,7 +30,12 @@ describe('validateEnv', () => {
   });
 
   it('rejects a missing REDIS_URL', () => {
-    expect(() => validateEnv({ DATABASE_URL: base.DATABASE_URL })).toThrow(EnvValidationError);
+    expect(() => validateEnv({ DATABASE_URL: base.DATABASE_URL, JWT_SECRET: base.JWT_SECRET })).toThrow(EnvValidationError);
+  });
+
+  it('rejects a missing or too-short JWT_SECRET', () => {
+    expect(() => validateEnv({ DATABASE_URL: base.DATABASE_URL, REDIS_URL: base.REDIS_URL })).toThrow(/JWT_SECRET/);
+    expect(() => validateEnv({ ...base, JWT_SECRET: 'too-short' })).toThrow(/JWT_SECRET/);
   });
 
   it('requires OPENSEARCH_URL when the opensearch provider is selected', () => {

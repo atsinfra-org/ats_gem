@@ -11,9 +11,40 @@ export class ParseError extends Error {
   }
 }
 
+const LAKH_CRORE_UNITS: Record<string, number> = {
+  l: 5,
+  lk: 5,
+  lac: 5,
+  lacs: 5,
+  lakh: 5,
+  lakhs: 5,
+  cr: 7,
+  crore: 7,
+  crores: 7,
+};
+
 /**
- * Parses Indian-formatted amounts ("₹ 1,23,45,678.5", "Rs. 5,000/-") into an exact decimal string
- * with two places ("12345678.50"). Empty markers ("NA", "-") return undefined. No floats involved.
+ * Scales a plain decimal digit string ("1", "1.5") by 10^power using exact integer arithmetic
+ * (BigInt, half-up rounding beyond 2 decimal places) and returns it formatted as "<whole>.<2dp>".
+ * Never uses floating-point, since these values are persisted as money (docs/DATABASE.md §4).
+ */
+function scaleDecimalStringExact(numStr: string, power: number): string {
+  const [wholePart, fracPart = ''] = numStr.split('.');
+  const digits = BigInt(wholePart + fracPart || '0');
+  const shift = power + 2 - fracPart.length;
+  const scaled = shift >= 0 ? digits * 10n ** BigInt(shift) : (() => {
+    const divisor = 10n ** BigInt(-shift);
+    return (digits + divisor / 2n) / divisor;
+  })();
+  const str = scaled.toString().padStart(3, '0');
+  const whole = str.slice(0, -2).replace(/^0+(?=\d)/, '');
+  return `${whole}.${str.slice(-2)}`;
+}
+
+/**
+ * Parses Indian-formatted amounts ("₹ 1,23,45,678.5", "Rs. 5,000/-", "10 lakh", "1.5 Cr", "10L")
+ * into an exact decimal string with two places ("12345678.50"). Empty markers ("NA", "-") return
+ * undefined. No floats involved anywhere, including the lakh/crore scaling.
  */
 export function parseIndianAmount(input: string | undefined | null): string | undefined {
   if (input === undefined || input === null) return undefined;
@@ -25,6 +56,13 @@ export function parseIndianAmount(input: string | undefined | null): string | un
     .replace(/,/g, '')
     .trim();
   if (EMPTY.has(cleaned)) return undefined;
+
+  const unitMatch = /^(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|lk|crores?|cr|l)$/.exec(cleaned);
+  if (unitMatch) {
+    const power = LAKH_CRORE_UNITS[unitMatch[2]];
+    return scaleDecimalStringExact(unitMatch[1], power);
+  }
+
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(cleaned);
   if (!match) throw new ParseError(`Unrecognised amount "${input}"`);
   const whole = match[1].replace(/^0+(?=\d)/, '');

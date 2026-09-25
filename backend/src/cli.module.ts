@@ -8,6 +8,8 @@ import { OutboxModule } from './outbox/outbox.module';
 import { QueuesModule } from './queues/queues.module';
 import { RedisModule } from './redis/redis.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
+import { BackfillService } from './tenders/backfill.service';
+import { ProcuringEntitiesModule } from './tenders/entities/procuring-entities.module';
 
 /** Composition root for one-shot operational commands (see main.cli.ts). */
 @Module({
@@ -19,7 +21,8 @@ import { SchedulerModule } from './scheduler/scheduler.module';
     QueuesModule,
     OutboxModule,
     SchedulerModule.forRoot({ runLoop: false }),
+    ProcuringEntitiesModule,
   ],
-  providers: [CrawlDispatcher, SeedService],
+  providers: [CrawlDispatcher, SeedService, BackfillService],
 })
 export class CliModule {}

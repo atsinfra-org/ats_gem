@@ -15,7 +15,7 @@ export interface RoutedJob<N extends JobName = JobName> {
 
 type Route<T extends DomainEventType> = (event: OutboxEventRecord<T>) => RoutedJob[];
 
-const toSearchIndex = (event: OutboxEventRecord<'tender.created' | 'tender.updated' | 'tender.closed'>): RoutedJob[] => [
+const toSearchIndex = (event: OutboxEventRecord<'tender.created' | 'tender.updated' | 'tender.closed' | 'tender.source_linked'>): RoutedJob[] => [
   {
     name: 'search.index-tender',
     payload: { tenderId: event.payload.tenderId, eventId: event.id, eventType: event.eventType },
@@ -36,6 +36,7 @@ export const OUTBOX_ROUTES: { [T in DomainEventType]: Route<T> } = {
   'tender.created': toSearchIndex,
   'tender.updated': toSearchIndex,
   'tender.closed': toSearchIndex,
+  'tender.source_linked': toSearchIndex,
   'document.created': () => [],
   'user.created': () => [],
   'organization.created': () => [],

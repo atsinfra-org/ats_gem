@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { config } from 'dotenv';
 import { resolveTestDatabaseUrl } from './support/test-env';
 
@@ -17,3 +19,8 @@ process.env.HEALTH_PORT = '0';
 process.env.EMAIL_DRIVER = 'log';
 process.env.SEARCH_PROVIDER = 'postgres';
 process.env.STORAGE_DRIVER = 'local';
+// Isolated per-run directory - never the repo's own `./storage` default.
+process.env.STORAGE_LOCAL_DIR = join(tmpdir(), `ats-gem-test-storage-${randomBytes(4).toString('hex')}`);
+// The per-IP auth rate limit (default 10 / 15 min) would trip suites that register many users from
+// the same loopback IP; the dedicated rate-limit test overrides this back to a small number.
+process.env.RATE_LIMIT_AUTH_MAX = '100000';

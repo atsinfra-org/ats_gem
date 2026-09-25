@@ -44,15 +44,21 @@ Two styles, chosen per endpoint:
 ### 1.5 Rate limits
 Responses include `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`. Exceeding returns `429 RATE_LIMITED` with `Retry-After`.
 
+**Implemented in Phase 2**: `register`, `forgot-password` and `reset-password` (`RateLimitGuard` +
+`@RateLimit('auth')`, per-IP, `RATE_LIMIT_AUTH_MAX`/`RATE_LIMIT_AUTH_WINDOW_MINUTES`, default
+10/15 min, matching the row below) and `login`'s separate per-IP-and-per-account lockout
+(`LoginThrottleService`, ARCHITECTURE §17.1). Every other row here — general per-audience limits,
+search, document URLs — is Phase 10 ("tiered rate limits").
+
 | Audience / class | Default |
 |---|---|
-| Anonymous (general) | 60 req/min/IP |
-| Authenticated | 300 req/min/user |
-| Paid plans | 600 req/min/user |
-| Admin | 1 200 req/min/user |
+| Anonymous (general) (Phase 10) | 60 req/min/IP |
+| Authenticated (Phase 10) | 300 req/min/user |
+| Paid plans (Phase 10) | 600 req/min/user |
+| Admin (Phase 10) | 1 200 req/min/user |
 | Auth endpoints (login, register, reset) | 10 req/15 min/IP + per-account lockout |
-| Search | 60 req/min anonymous, 120 authenticated |
-| Document URLs | 30 req/min/user + plan download quota |
+| Search (Phase 10) | 60 req/min anonymous, 120 authenticated |
+| Document URLs (Phase 10) | 30 req/min/user + plan download quota |
 
 ### 1.6 Auth levels used below
 `public` · `user` (any signed-in user) · `org:<role>` (member of the current organization with at least that role) · `perm:<key>` (platform permission) · `ent:<feature>` (plan entitlement checked/consumed).
@@ -114,9 +120,14 @@ Other schemas (`User`, `Organization`, `SavedSearch`, `Alert`, `Notification`, `
 
 ## 3. Auth — `/auth`
 
+**Implemented in Phase 2** except `GET /auth/google` and `/auth/google/callback`: the schema is
+ready (`user_identities`) but no route exists yet — it needs real Google credentials to verify
+end-to-end (docs/ARCHITECTURE.md §17.1). `password ≥ 8` is enforced; breach-list checking is not
+implemented (would need an external API call on every registration — deferred, see IMPLEMENTATION-PLAN.md).
+
 | Method & path | Auth | Body / params | Response `data` |
 |---|---|---|---|
-| `POST /auth/register` | public | `{ name, email, password, acceptTerms: true }` (password ≥ 8, not in breach list; terms version recorded) | `{ user, requiresEmailVerification: true }` · sets refresh cookie, returns `accessToken` |
+| `POST /auth/register` | public | `{ name, email, password, acceptTerms: true }` (password ≥ 8; terms version recorded) | `{ user, requiresEmailVerification: true, accessToken, expiresIn }` · sets refresh cookie |
 | `POST /auth/login` | public | `{ email, password }` | `{ accessToken, expiresIn, user }` · sets refresh cookie |
 | `POST /auth/refresh` | refresh cookie + `X-Requested-With` | — | `{ accessToken, expiresIn }` · rotates cookie |
 | `POST /auth/logout` | user | — | `null` · revokes current session, clears cookie |
@@ -124,42 +135,101 @@ Other schemas (`User`, `Organization`, `SavedSearch`, `Alert`, `Notification`, `
 | `POST /auth/resend-verification` | user | — | `null` |
 | `POST /auth/forgot-password` | public | `{ email }` | `null` (always 200 — no enumeration) |
 | `POST /auth/reset-password` | public | `{ token, password }` | `null` · revokes all sessions |
-| `POST /auth/change-password` | user | `{ currentPassword, newPassword }` | `null` · revokes other sessions |
-| `GET /auth/google` | public | `?redirect=/dashboard` | 302 to Google |
-| `GET /auth/google/callback` | public | Google params | 302 to frontend with session established |
+| `POST /auth/change-password` | user | `{ currentPassword, newPassword }` | `null` · revokes other sessions (not the current one) |
+| `POST /auth/switch-organization/:organizationId` | user | — | `{ accessToken, expiresIn, organizationId }` · **new in Phase 2** (not in the original contract): mints a token scoped to another organization the caller belongs to; same session, no new cookie. See ARCHITECTURE §17.4 for why this exists. |
+| `GET /auth/google` | public | *(not yet implemented — Phase 2 stub, see above)* | `?redirect=/dashboard` → 302 to Google |
+| `GET /auth/google/callback` | public | *(not yet implemented)* | Google params → 302 to frontend with session established |
 | `GET /auth/sessions` | user | — | `Session[]` (device, ip, lastUsedAt, current) |
 | `DELETE /auth/sessions/:id` | user | — | `null` |
 
 ## 4. Current user & organization — `/me`, `/organizations`
 
+Rows marked **(Phase N)** are not implemented yet; everything else shipped in Phase 2. Plan
+summary/entitlements and `ent:team_seats` do not exist before Phase 8, so `GET /me` omits them and
+`POST /organizations/current/invitations` currently has no seat limit.
+
 | Method & path | Auth | Notes |
 |---|---|---|
-| `GET /me` | user | profile + roles + current organization + plan summary + entitlements |
-| `PATCH /me` | user | `{ name?, phone?, designation? }` (email change is a separate verified flow) |
-| `POST /me/avatar` | user | multipart image ≤ 2 MB (png/jpg/webp) → `{ avatarUrl }` |
-| `GET /me/usage` | user | per-feature usage vs limits for the current period |
-| `GET/PATCH /me/notification-preferences` | user | channel and category toggles |
+| `GET /me` | user | profile + `staffRoles` + current organization (no plan/entitlements yet — Phase 8) |
+| `PATCH /me` | user | `{ name?, phone?, designation? }` (email change is a separate verified flow — not built) |
+| `POST /me/avatar` (Phase 6) | user | multipart image ≤ 2 MB (png/jpg/webp) → `{ avatarUrl }` |
+| `GET /me/usage` (Phase 8) | user | per-feature usage vs limits for the current period |
+| `GET/PATCH /me/notification-preferences` (Phase 7) | user | channel and category toggles |
 | `GET /organizations/current` | org:VIEWER | company profile |
-| `PATCH /organizations/current` | org:OWNER | `{ name, gstin, pan, industry, companySize, address, stateCode, city, website, contactPerson, categoryIds }` |
+| `PATCH /organizations/current` | org:OWNER | `{ name?, gstin?, pan?, industry?, companySize?, address?, stateCode?, city?, website?, contactPerson? }` (`categoryIds` not yet — Phase 3 links categories to organizations) |
 | `GET /organizations/current/members` | org:VIEWER | |
-| `POST /organizations/current/invitations` | org:OWNER + ent:team_seats | `{ email, role }` |
-| `PATCH/DELETE /organizations/current/members/:userId` | org:OWNER | owner cannot be removed |
-| `POST /organizations/invitations/accept` | user | `{ token }` |
-| `GET/POST /organizations/current/documents` | org:OWNER | KYC documents (multipart PDF/JPG ≤ 10 MB) |
-| `DELETE /organizations/current/documents/:id` | org:OWNER | |
+| `POST /organizations/current/invitations` | org:OWNER | `{ email, role: "MEMBER" \| "VIEWER" }` — re-inviting a still-pending email replaces the old invitation |
+| `PATCH/DELETE /organizations/current/members/:userId` | org:OWNER | `{ role: "MEMBER" \| "VIEWER" }`; the owner's own row cannot be changed or removed |
+| `POST /organizations/invitations/accept` | user | `{ token }` — idempotent; rejects a token whose invited email does not match the signed-in account; call `POST /auth/switch-organization/:organizationId` afterwards to actually act in the joined organization |
+| `GET/POST /organizations/current/documents` (Phase 6) | org:OWNER | KYC documents (multipart PDF/JPG ≤ 10 MB) |
+| `DELETE /organizations/current/documents/:id` (Phase 6) | org:OWNER | |
 
 ## 5. Tenders & search
+
+**Phase 2/3 implement a plain indexed-column filter, not the relevance-ranked search engine below**
+(that is Phase 4/5, behind the same `GET /search/tenders` path and response shape). Live now on
+`GET /tenders` (not yet renamed to `/search/tenders`): `q` (title substring, case-insensitive),
+`state`, `category`, `status`, `procuringEntity` (canonical entity UUID, Phase 3), `district`,
+`minValue`/`maxValue` (exact decimal strings, Phase 3), `publishedFrom/To`, `closingFrom/To`,
+`sortBy` (`publishedAt`|`closingAt`|`estimatedValue`, Phase 3) / `sortOrder`, and page-based
+`page`/`pageSize` (no cursor mode, no facets yet). `GET /tenders/:id` takes a UUID only (no slug
+lookup yet) and, as of Phase 3, also returns `procuringEntity`, `versions` (diff history),
+`qualityIssues` (open, non-blocking findings), `sourceStatusRaw` and `duplicateOfId`; `documents` is
+still always `[]` (Phase 6 populates it). Everything else in this section — `/search/suggest`,
+`/tenders/:id/similar`, document URLs/archives, `entitlement` checks,
+`city/subCategory/tenderType/procurementType/source/emd/fee` filters and `/meta/sources` — is not
+implemented yet.
+
+### 5.1 Procuring entities and duplicate review (Phase 3, not yet under `/admin`)
+Minimal admin-facing APIs, permission-gated, not part of the `/admin` surface sketched in §11 below
+(that surface does not exist yet — these are their own top-level routes for now and can move under
+`/admin` when that module is built):
+
+| Method & path | Auth | Notes |
+|---|---|---|
+| `GET /procuring-entities` | `admin.access` | `?state&search&page&pageSize` |
+| `POST /procuring-entities/:id/merge` | `entity.merge` | `{ targetEntityId }` → 200, no body. Never deletes; see docs/ARCHITECTURE.md §18.7 |
+| `GET /duplicate-candidates` | `duplicate.review` | `?status&page&pageSize` |
+| `POST /duplicate-candidates/:id/resolve` | `duplicate.review` | `{ resolution: "CONFIRMED"\|"REJECTED", notes? }` → 200, no body. See docs/ARCHITECTURE.md §18.8 |
+
+### 5.2 Tender enrichment — requirements, timeline, corrigenda, documents, corrections (Phase 4)
+Reads are public (same visibility as the tender itself); mutations require `tender.update`
+(requirements/corrigenda/timeline correction) or the new `tender.correct` (canonical field
+correction) — see docs/ARCHITECTURE.md §19.
+
+| Method & path | Auth | Notes |
+|---|---|---|
+| `GET /tenders/:id/requirements` | public | `?type&page&pageSize` |
+| `GET /tenders/:id/requirements/:reqId` | public | |
+| `POST /tenders/:id/requirements` | `tender.update` | `{ type, title, description?, value?, unit?, isMandatory?, sourceReference? }` |
+| `PATCH /tenders/:id/requirements/:reqId` | `tender.update` | partial update of the same fields |
+| `DELETE /tenders/:id/requirements/:reqId` | `tender.update` | → 200, no body |
+| `GET /tenders/:id/timeline` | public | `?page&pageSize` (max 200), chronological, unknown timestamps sorted last |
+| `GET /tenders/:id/timeline/:eventId` | public | |
+| `PATCH /tenders/:id/timeline/:eventId` | `tender.update` | `{ eventAt?, title?, description? }` — administrative correction, audited |
+| `GET /tenders/:id/corrigenda` | public | `?page&pageSize` |
+| `GET /tenders/:id/corrigenda/:corrigendumId` | public | |
+| `POST /tenders/:id/corrigenda` | `tender.update` | `{ title, publishedAt, description?, effectiveAt?, sourceUrl?, sourceId?, sourceReference?, documentId?, affectedFields? }` — also records a matching `CORRIGENDUM` timeline event |
+| `GET /tenders/:id/documents` | public | `?page&pageSize`. No public upload route — registration is internal (future crawler document-fetch step, Phase 6) |
+| `GET /tenders/:id/documents/:documentId` | public | metadata only, never a storage key/credential |
+| `GET /tenders/:id/documents/:documentId/download` | public | streams the file directly (`Content-Disposition: attachment`) |
+| `PATCH /tenders/:id/correct` | `tender.correct` | `{ title?, description?, estimatedValue?, emdAmount?, tenderFee?, closingAt?, openingAt?, stateCode?, city?, locationText?, reason }` — `reason` required, every change audited with old/new value |
+
+`GET /tenders/:id` (§5 above) now also returns `documents`, `requirements`, `timeline`, `corrigenda`
+(each capped at 20 rows — use the dedicated endpoints above for anything beyond that) and
+`provenance` (`[{ sourceId, sourceUrl, firstSeenAt, lastSeenAt, lastChangedAt }]`, one entry per
+source currently tracking the tender).
 
 | Method & path | Auth | Notes |
 |---|---|---|
 | `GET /search/tenders` | public (limited) / user | Params: `q`, `state`, `district`, `city`, `category`, `subCategory`, `tenderType`, `procurementType`, `status`, `source`, `procuringEntity`, `valueMin`, `valueMax`, `emdMin`, `emdMax`, `feeMax`, `publishedFrom/To`, `closingFrom/To`, `sort`, `page`/`pageSize` **or** `cursor`/`limit`, `facets=true`. Quoted phrases in `q` are exact; a `q` that looks like a reference number boosts reference matches. Response: `TenderSummary[]`; `meta.facets = { state: [{value, label, count}], category: [...], source: [...], tenderType: [...], status: [...], valueRanges: [...] }`. Anonymous users get the first page only. |
-| `GET /search/suggest` | public | `?q=` → keyword/entity/category suggestions (≤ 8) |
+| `GET /search/suggest` (Phase 4/5) | public | `?q=` → keyword/entity/category suggestions (≤ 8) |
 | `GET /tenders/:idOrSlug` | public (limited) / user + ent:tender_views | `TenderDetail`. Anonymous: summary fields + document list without download. Counts a view once per user per tender per day. |
-| `GET /tenders/:id/similar` | public | `?limit=4` → `TenderSummary[]` |
-| `GET /tenders/:id/documents/:documentId/url` | user + ent:document_downloads | `{ url, expiresAt }` signed URL (5 min) |
-| `POST /tenders/:id/documents/archive` | user + ent:document_downloads | starts "download all" → `{ archiveId, status }` |
-| `GET /documents/archives/:archiveId` | user | `{ status, url?, expiresAt? }` |
-| `GET /meta/states` · `/meta/categories` · `/meta/tender-types` · `/meta/sources` | public | reference data for filters (sources expose name/slug only) |
+| `GET /tenders/:id/similar` (Phase 4/5) | public | `?limit=4` → `TenderSummary[]` |
+| `GET /tenders/:id/documents/:documentId/url` (Phase 6) | user + ent:document_downloads | `{ url, expiresAt }` signed URL (5 min) |
+| `POST /tenders/:id/documents/archive` (Phase 6) | user + ent:document_downloads | starts "download all" → `{ archiveId, status }` |
+| `GET /documents/archives/:archiveId` (Phase 6) | user | `{ status, url?, expiresAt? }` |
+| `GET /meta/states` · `/meta/categories` · `/meta/tender-types` | public | reference data for filters — live now. `/meta/sources` (Phase 4/5) not yet. |
 
 ## 6. Market data (landing page) — `/market`
 
@@ -171,31 +241,40 @@ Other schemas (`User`, `Organization`, `SavedSearch`, `Alert`, `Notification`, `
 
 ## 7. Watchlists, saved searches, alerts, bids
 
+**Phase 2 implements the watchlist and saved searches rows below, under different paths than
+originally drafted** (`/watchlist`, not `/watchlist/tenders`; no `shared`/entitlement checks, no
+results-runner endpoint). Follows, alerts and bids are not implemented.
+
 | Method & path | Auth | Notes |
 |---|---|---|
-| `GET /watchlist/tenders` | user | page-based, `sort=closing_soon|newest|value_desc` |
-| `PUT /watchlist/tenders/:tenderId` | user | idempotent save → `{ saved: true }` |
-| `DELETE /watchlist/tenders/:tenderId` | user | idempotent unsave |
-| `GET /watchlist/follows` · `POST` · `DELETE /:id` | user | `{ targetType: PROCURING_ENTITY|CATEGORY|STATE|DISTRICT|KEYWORD, targetId?, targetValue? }` |
-| `GET /saved-searches` | user | own + shared in org |
-| `POST /saved-searches` | user + ent:saved_searches | `{ name, criteria: SearchCriteria, shared?: boolean }` — `SearchCriteria` uses the same keys as `/search/tenders` |
-| `PATCH/DELETE /saved-searches/:id` | creator or org:OWNER | |
-| `GET /saved-searches/:id/results` | user | runs the stored criteria through search |
-| `GET /alerts` · `POST` | user + ent:alerts | `{ savedSearchId \| criteria, name, frequency: INSTANT \| DAILY \| WEEKLY, channels: ("EMAIL" \| "IN_APP")[] }` — `SMS`, `WHATSAPP`, `PUSH` are reserved and return `422 CHANNEL_NOT_AVAILABLE` |
-| `PATCH /alerts/:id` · `DELETE` | owner | |
-| `POST /alerts/:id/pause` · `/resume` | owner | |
-| `GET /bids` · `POST` · `PATCH /:id` · `DELETE /:id` | org:MEMBER | `{ tenderId, stage, bidAmount?: Money, submittedAt?, notes? }` |
+| `GET /watchlist` | user | *(was drafted as `/watchlist/tenders`)* full list, newest first — no pagination/sort yet |
+| `POST /watchlist` | user | *(was drafted as `PUT /watchlist/tenders/:tenderId`)* `{ tenderId, note? }` → the bookmark row; idempotent (bookmarking twice returns the existing row) |
+| `DELETE /watchlist/:tenderId` | user | idempotent unsave |
+| `GET /watchlist/follows` (Phase 7) · `POST` · `DELETE /:id` | user | `{ targetType: PROCURING_ENTITY|CATEGORY|STATE|DISTRICT|KEYWORD, targetId?, targetValue? }` |
+| `GET /saved-searches` | org:VIEWER | scoped to the caller's current organization (not "own + shared" — there is only one shared, org-scoped list) |
+| `POST /saved-searches` | org:MEMBER | `{ name, criteria: SearchCriteria }` — `SearchCriteria` accepts the same keys as `/search/tenders`'s live filters (§5) and rejects unknown ones; no `shared` flag or entitlement check yet |
+| `PATCH/DELETE /saved-searches/:id` | org:MEMBER | 404 `SAVED_SEARCH_NOT_FOUND` for another organization's saved search |
+| `GET /saved-searches/:id/results` (Phase 4/5) | user | runs the stored criteria through search |
+| `GET /alerts` (Phase 7) · `POST` | user + ent:alerts | `{ savedSearchId \| criteria, name, frequency: INSTANT \| DAILY \| WEEKLY, channels: ("EMAIL" \| "IN_APP")[] }` — `SMS`, `WHATSAPP`, `PUSH` are reserved and return `422 CHANNEL_NOT_AVAILABLE` |
+| `PATCH /alerts/:id` (Phase 7) · `DELETE` | owner | |
+| `POST /alerts/:id/pause` (Phase 7) · `/resume` | owner | |
+| `GET /bids` (Phase 7) · `POST` · `PATCH /:id` · `DELETE /:id` | org:MEMBER | `{ tenderId, stage, bidAmount?: Money, submittedAt?, notes? }` |
 
 ## 8. Notifications — `/notifications`
 
+**Phase 2 implements in-app records only** (list, unread count, mark-read) — no delivery over any
+channel, no preferences, no SSE stream. `type` is free text (e.g. `"SYSTEM"`), not the closed set
+implied below; nothing creates notifications automatically yet (`NotificationsService.create()` is
+called directly by other services, but no feature currently calls it).
+
 | Method & path | Auth | Notes |
 |---|---|---|
-| `GET /notifications` | user | cursor-based; `?category=TENDER_ALERT&unread=true` |
-| `GET /notifications/unread-count` | user | `{ count }` |
-| `POST /notifications/:id/read` | user | idempotent |
-| `POST /notifications/read-all` | user | |
-| `DELETE /notifications` | user | clears (soft) all |
-| `GET /notifications/stream` | user (token via cookie or `?access_token`) | **Server-Sent Events**: `event: notification` with a `Notification` payload; `event: unread-count`. Heartbeat every 25 s. |
+| `GET /notifications` | user | *(not yet cursor-based)* latest 50, newest first; `meta.unreadCount` on every response |
+| `GET /notifications/unread-count` (Phase 7) | user | `{ count }` — for now, read it from `GET /notifications`'s `meta.unreadCount` |
+| `POST /notifications/:id/read` | user | *(implemented as `PATCH`, not `POST`)* idempotent |
+| `POST /notifications/read-all` | user | *(implemented as `PATCH`, not `POST`)* |
+| `DELETE /notifications` (Phase 7) | user | clears (soft) all |
+| `GET /notifications/stream` (Phase 7) | user (token via cookie or `?access_token`) | **Server-Sent Events**: `event: notification` with a `Notification` payload; `event: unread-count`. Heartbeat every 25 s. |
 
 Realtime strategy: SSE only (one-way server → client is all the product needs; works through proxies and scales with Redis pub/sub fan-out). WebSockets are not planned.
 
@@ -261,7 +340,7 @@ Realtime strategy: SSE only (one-way server → client is all the product needs;
 | 403 | `ACCOUNT_SUSPENDED` | |
 | 402 | `PLAN_LIMIT_REACHED` | `details: [{ feature, limit, used, resetsAt }]` |
 | 402 | `PLAN_FEATURE_UNAVAILABLE` | feature not in plan |
-| 404 | `NOT_FOUND`, `TENDER_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `SAVED_SEARCH_NOT_FOUND`, `ALERT_NOT_FOUND`, `SOURCE_NOT_FOUND` | |
+| 404 | `NOT_FOUND`, `TENDER_NOT_FOUND`, `ORGANIZATION_NOT_FOUND`, `DOCUMENT_NOT_FOUND`, `SAVED_SEARCH_NOT_FOUND`, `ALERT_NOT_FOUND`, `SOURCE_NOT_FOUND` | `ORGANIZATION_NOT_FOUND` added in Phase 2 |
 | 409 | `CONFLICT`, `EMAIL_ALREADY_REGISTERED`, `ALREADY_MEMBER`, `SUBSCRIPTION_ACTIVE` | |
 | 410 | `TOKEN_INVALID_OR_EXPIRED` | verify/reset/invite tokens |
 | 413 | `FILE_TOO_LARGE` | |

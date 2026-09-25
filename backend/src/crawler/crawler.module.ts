@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
+import { ProcuringEntitiesModule } from '../tenders/entities/procuring-entities.module';
 import { AdapterRegistry, SOURCE_ADAPTERS } from './adapters/adapter.registry';
 import { MockSourceAdapter } from './adapters/mock/mock-source.adapter';
 import { CrawlRunsService } from './crawl-runs.service';
+import { DeduplicationEngine } from './dedup/deduplication-engine';
 import { DiscoverSourceHandler } from './handlers/discover-source.handler';
 import { FinalizeRunHandler } from './handlers/finalize-run.handler';
 import { IngestTenderHandler } from './handlers/ingest-tender.handler';
@@ -13,11 +15,13 @@ import { TenderIngestionService } from './ingestion/tender-ingestion.service';
  * per-portal onboarding review in docs/ARCHITECTURE.md §14; Phase 1 ships the mock adapter only.
  */
 @Module({
+  imports: [ProcuringEntitiesModule],
   providers: [
     MockSourceAdapter,
     { provide: SOURCE_ADAPTERS, useFactory: (mock: MockSourceAdapter) => [mock], inject: [MockSourceAdapter] },
     AdapterRegistry,
     CrawlRunsService,
+    DeduplicationEngine,
     TenderIngestionService,
     DiscoverSourceHandler,
     IngestTenderHandler,

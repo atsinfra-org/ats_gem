@@ -5,6 +5,7 @@ import { CrawlDispatcher } from './crawler/crawl-dispatcher.service';
 import { SeedService } from './database/seed.service';
 import { QueueHealthService } from './queues/queue-health.service';
 import { SchedulerService } from './scheduler/scheduler.service';
+import { BackfillService } from './tenders/backfill.service';
 
 const USAGE = `Usage: node dist/main.cli.js <command>
 
@@ -12,7 +13,9 @@ Commands:
   seed                 Create default job schedules (and the mock source outside production)
   crawl <slug|id>      Enqueue an on-demand crawl of a tender source
   schedules:sync       Reconcile job_schedules / source schedules into BullMQ once
-  queues:status        Print per-queue counts, consumers and latency`;
+  queues:status        Print per-queue counts, consumers and latency
+  backfill:phase3      Resolve procuring entities and quality issues for pre-Phase-3 tenders (idempotent)
+  backfill:phase4      Seed timeline events and quality issues for pre-Phase-4 tenders (idempotent)`;
 
 type Command = (app: Awaited<ReturnType<typeof NestFactory.createApplicationContext>>, args: string[]) => Promise<unknown>;
 
@@ -24,6 +27,8 @@ const COMMANDS: Record<string, Command> = {
   },
   'schedules:sync': (app) => app.get(SchedulerService).reconcile(),
   'queues:status': (app) => app.get(QueueHealthService).snapshot(),
+  'backfill:phase3': (app) => app.get(BackfillService).run(),
+  'backfill:phase4': (app) => app.get(BackfillService).runPhase4(),
 };
 
 async function main(): Promise<void> {

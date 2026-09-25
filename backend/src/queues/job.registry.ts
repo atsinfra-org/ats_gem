@@ -28,7 +28,7 @@ export const JOB_SCHEMAS = {
   'search.index-tender': z.object({
     tenderId: uuid,
     eventId: uuid,
-    eventType: z.enum(['tender.created', 'tender.updated', 'tender.closed']),
+    eventType: z.enum(['tender.created', 'tender.updated', 'tender.closed', 'tender.source_linked']),
   }),
   // Consumer lands in Phase 7.
   'notification.dispatch': z.object({

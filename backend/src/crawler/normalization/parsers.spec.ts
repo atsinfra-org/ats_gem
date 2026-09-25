@@ -11,6 +11,16 @@ describe('parseIndianAmount', () => {
     ['007.05', '7.05'],
     // Beyond Number.MAX_SAFE_INTEGER: stays exact because no float is involved.
     ['9,99,99,99,99,99,99,999.99', '9999999999999999.99'],
+    // Word-based lakh/crore notation (Phase 3): exact scaling, never floating-point.
+    ['10 lakh', '1000000.00'],
+    ['10L', '1000000.00'],
+    ['10l', '1000000.00'],
+    ['1 Crore', '10000000.00'],
+    ['1.5 Cr', '15000000.00'],
+    ['₹1.5 Cr', '15000000.00'],
+    ['2.5 lakhs', '250000.00'],
+    ['1.256 lakh', '125600.00'],
+    ['1.2567 lakh', '125670.00'],
   ])('%s → %s', (input, expected) => {
     expect(parseIndianAmount(input)).toBe(expected);
   });

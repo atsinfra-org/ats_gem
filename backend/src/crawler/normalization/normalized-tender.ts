@@ -27,6 +27,9 @@ export const NormalizedTenderSchema = z
     closingAt: z.iso.datetime().optional(),
     openingAt: z.iso.datetime().optional(),
     lifecycle: z.enum(['ACTIVE', 'CANCELLED', 'AWARDED', 'ARCHIVED']).default('ACTIVE'),
+    /** Literal status text as the source portal shows it (e.g. "Live", "Corrigendum Issued"). Stored
+     * as-is on `tenders.source_status_raw` alongside the derived `lifecycle` (Phase 3; never replaces it). */
+    sourceStatusRaw: z.string().max(200).optional(),
   })
   .refine((t) => !t.closingAt || t.closingAt >= t.publishedAt, {
     message: 'closingAt must not be before publishedAt',

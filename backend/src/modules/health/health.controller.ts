@@ -1,5 +1,6 @@
 import { Controller, Get, HttpCode } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiServiceUnavailableResponse, ApiTags } from '@nestjs/swagger';
+import { Public } from '../../auth/public.decorator';
 import { AppError } from '../../common/errors/app-error';
 import { AppConfig } from '../../config/app-config.service';
 import { QueueHealthService, type QueueSnapshot } from '../../queues/queue-health.service';
@@ -7,8 +8,13 @@ import { HealthService, type ReadinessReport } from './health.service';
 
 const QUEUE_SNAPSHOT_TIMEOUT_MS = 3_000;
 
+/**
+ * Every route here is `@Public()`: container healthchecks and load balancers cannot present a
+ * bearer token, and `/health/queues` is documented as moving behind staff auth only in Phase 5.
+ */
 @ApiTags('health')
 @Controller('health')
+@Public()
 export class HealthController {
   constructor(
     private readonly health: HealthService,

@@ -1,6 +1,7 @@
 import { RequestMethod } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { AllExceptionsFilter } from '../common/http/all-exceptions.filter';
@@ -48,6 +49,9 @@ export function configureApp(app: NestExpressApplication): void {
   });
 
   app.useBodyParser('json', { limit: '1mb' });
+  // Only the refresh-token cookie is ever read; it is unsigned (the token itself is opaque and
+  // hashed server-side, so there is nothing for cookie signing to protect against tampering with).
+  app.use(cookieParser());
 
   app.setGlobalPrefix(API_PREFIX, {
     exclude: [

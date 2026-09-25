@@ -18,6 +18,13 @@ describe('outbox routing', () => {
     ]);
   });
 
+  it('tender.source_linked → search indexing job', () => {
+    const payload = { tenderId, sourceId: eventId, outcome: 'auto-link' as const };
+    expect(routeEvent({ id: eventId, eventType: 'tender.source_linked', payload, correlationId: null })).toEqual([
+      { name: 'search.index-tender', payload: { tenderId, eventId, eventType: 'tender.source_linked' } },
+    ]);
+  });
+
   it('events without a consumer yet route to nothing (still marked published)', () => {
     expect(routeEvent({ id: eventId, eventType: 'user.created', payload: { userId: tenderId }, correlationId: null })).toEqual([]);
   });
@@ -27,6 +34,7 @@ describe('outbox routing', () => {
       'tender.created',
       'tender.updated',
       'tender.closed',
+      'tender.source_linked',
       'document.created',
       'user.created',
       'organization.created',

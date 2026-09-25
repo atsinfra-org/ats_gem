@@ -78,7 +78,10 @@ describe.skipIf(!redisUp)('Queues and workers (e2e, Redis)', () => {
   async function jobIn(queue: QueueName, id: string, states: string[], timeoutMs = 15_000): Promise<Job<JobEnvelope>> {
     return waitFor(async () => {
       const job = (await producer.queue(queue).getJob(id)) as Job<JobEnvelope> | undefined;
-      return job && states.includes(await job.getState()) ? job : undefined;
+      if (!job || !states.includes(await job.getState())) return undefined;
+      // getState() can observe a terminal state a moment before this job instance's own fields
+      // (returnvalue, attemptsMade, finishedOn) reflect it — re-fetch for a settled snapshot.
+      return ((await producer.queue(queue).getJob(id)) as Job<JobEnvelope> | undefined) ?? job;
     }, timeoutMs);
   }
 
