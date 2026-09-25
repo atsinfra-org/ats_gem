@@ -1,0 +1,198 @@
+# ATS Gem — local development stack.
+#
+#   docker compose up -d --build          infrastructure + migrate + seed + api + worker + scheduler
+#   docker compose --profile search up -d also start OpenSearch (needs ~1.5 GB RAM)
+#   docker compose up -d postgres redis   infrastructure only (run the app natively)
+#
+# Credentials below are local-development defaults, not secrets. Host ports avoid clashing with
+# natively installed services (Postgres is published on 5433).
+#
+# Container health checks for api / worker / scheduler use /health/ready, so "healthy" here means
+# the process is up AND its dependencies are reachable. (The image's default HEALTHCHECK uses
+# /health/live, the right signal for orchestrator restarts.)
+
+name: ats-gem
+
+x-app-env: &app-env
+  NODE_ENV: development
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  # The runtime image has production dependencies only (no pino-pretty); containers log JSON.
+  LOG_FORMAT: json
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  SWAGGER_ENABLED: "true"
+  DATABASE_URL: postgresql://ats_gem:${COMPOSE_POSTGRES_PASSWORD:-ats_gem_dev}@postgres:5432/ats_gem?schema=public
+  REDIS_URL: redis://redis:6379/0
+  QUEUE_PREFIX: ats
+  SEARCH_PROVIDER: ${SEARCH_PROVIDER:-postgres}
+  OPENSEARCH_URL: http://opensearch:9200
+  STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+  STORAGE_LOCAL_DIR: /app/storage
+  S3_ENDPOINT: http://minio:9000
+  S3_REGION: ap-south-1
+  S3_BUCKET: ats-gem-documents
+  S3_ACCESS_KEY: ${COMPOSE_MINIO_USER:-ats_gem}
+  S3_SECRET_KEY: ${COMPOSE_MINIO_PASSWORD:-ats_gem_dev_minio}
+  S3_FORCE_PATH_STYLE: "true"
+  # Phase 1 records emails in the logs (masked); SMTP delivery via Mailpit arrives in Phase 2.
+  EMAIL_DRIVER: log
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ats_gem
+      POSTGRES_PASSWORD: ${COMPOSE_POSTGRES_PASSWORD:-ats_gem_dev}
+      POSTGRES_DB: ats_gem
+    ports: ["5433:5432"]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ats_gem -d ats_gem"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    # AOF persistence + noeviction: BullMQ must never have queue keys evicted.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports: ["6379:6379"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  opensearch:
+    profiles: [search]
+    image: opensearchproject/opensearch:2
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ["9200:9200"]
+    volumes: [opensearch-data:/usr/share/opensearch/data]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${COMPOSE_MINIO_USER:-ats_gem}
+      MINIO_ROOT_PASSWORD: ${COMPOSE_MINIO_PASSWORD:-ats_gem_dev_minio}
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio-data:/data]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_USER} $${MINIO_PASSWORD} &&
+      mc mb --ignore-existing local/ats-gem-documents &&
+      mc anonymous set none local/ats-gem-documents"
+    environment:
+      MINIO_USER: ${COMPOSE_MINIO_USER:-ats_gem}
+      MINIO_PASSWORD: ${COMPOSE_MINIO_PASSWORD:-ats_gem_dev_minio}
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ["1025:1025", "8025:8025"]
+
+  migrate:
+    build: { context: ., target: migrate }
+    environment:
+      DATABASE_URL: postgresql://ats_gem:${COMPOSE_POSTGRES_PASSWORD:-ats_gem_dev}@postgres:5432/ats_gem?schema=public
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # Idempotent: default job schedules + the mock source (never seeded when NODE_ENV=production).
+  seed:
+    build: { context: ., target: runtime }
+    command: ["node", "dist/main.cli.js", "seed"]
+    environment:
+      <<: *app-env
+      PROCESS_ROLE: cli
+    healthcheck: { disable: true }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    build: { context: ., target: runtime }
+    environment:
+      <<: *app-env
+      PORT: "4000"
+    ports: ["4000:4000"]
+    volumes: [storage-data:/app/storage]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  worker:
+    build: { context: ., target: runtime }
+    command: ["node", "dist/main.worker.js"]
+    environment:
+      <<: *app-env
+      PROCESS_ROLE: worker
+      WORKER_QUEUES: "*"
+      HEALTH_PORT: "4001"
+    ports: ["4001:4001"]
+    volumes: [storage-data:/app/storage]
+    # Lets in-flight jobs finish (WORKER_SHUTDOWN_TIMEOUT_MS defaults to 30 s) before SIGKILL.
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4001/health/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  scheduler:
+    build: { context: ., target: runtime }
+    command: ["node", "dist/main.scheduler.js"]
+    environment:
+      <<: *app-env
+      PROCESS_ROLE: scheduler
+      HEALTH_PORT: "4002"
+    ports: ["4002:4002"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4002/health/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+    depends_on:
+      seed: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+volumes:
+  postgres-data:
+  redis-data:
+  opensearch-data:
+  minio-data:
+  storage-data:
