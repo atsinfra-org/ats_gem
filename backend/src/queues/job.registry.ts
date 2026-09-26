@@ -41,8 +41,14 @@ export const JOB_SCHEMAS = {
     template: z.string().regex(/^[a-z0-9-]+$/),
     variables: z.record(z.string(), z.string()).default({}),
   }),
+  /** Phase 8: send one email delivery (a `notification_deliveries` row). */
+  'notification.email': z.object({ deliveryId: uuid }),
+  /** Phase 8: scheduled sweeps. */
+  'notification.deadline-sweep': empty,
+  'notification.send-digests': empty,
   'maintenance.outbox-cleanup': empty,
   'maintenance.sources-health-check': empty,
+  'maintenance.search-events-purge': empty,
   'dead-letter.record': z.object({
     queue: z.string(),
     jobName: z.string(),
@@ -100,8 +106,12 @@ export const JOB_DEFINITIONS: { [N in JobName]: JobDefinition<N> } = {
     // Deliberately excludes the recipient address.
     logContext: (p) => ({ template: p.template }),
   },
+  'notification.email': { queue: QueueName.EMAIL, logContext: (p) => ({ deliveryId: p.deliveryId }) },
+  'notification.deadline-sweep': { queue: QueueName.MAINTENANCE },
+  'notification.send-digests': { queue: QueueName.MAINTENANCE },
   'maintenance.outbox-cleanup': { queue: QueueName.MAINTENANCE },
   'maintenance.sources-health-check': { queue: QueueName.MAINTENANCE },
+  'maintenance.search-events-purge': { queue: QueueName.MAINTENANCE },
   'dead-letter.record': {
     queue: QueueName.DEAD_LETTER,
     logContext: (p) => ({ originalQueue: p.queue, originalJobName: p.jobName, originalJobId: p.jobId }),

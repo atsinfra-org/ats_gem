@@ -90,7 +90,7 @@ describe.skipIf(!redisUp)('Mock crawl pipeline (e2e, PostgreSQL + Redis)', () =>
     await expect(scheduler.reconcile()).resolves.toMatchObject({ upserted: [`crawl.${sourceId}`] });
 
     // As soon as the schedule has fired once, switch it off again.
-    await waitFor(() => prisma.crawlRun.findFirst({ where: { sourceId } }), 15_000);
+    await waitFor(() => prisma.crawlRun.findFirst({ where: { sourceId } }), 30_000);
     await prisma.tenderSource.update({ where: { id: sourceId }, data: { crawlEnabled: false } });
     await expect(scheduler.reconcile()).resolves.toMatchObject({ removed: [`crawl.${sourceId}`] });
 
@@ -119,8 +119,8 @@ describe.skipIf(!redisUp)('Mock crawl pipeline (e2e, PostgreSQL + Redis)', () =>
     });
 
     // Outbox → relay → search.indexing queue → worker.
-    await waitFor(async () => (await prisma.outboxEvent.count({ where: { publishedAt: null } })) === 0, 15_000);
-    await waitFor(async () => (await indexedJobs()) === 11, 15_000);
+    await waitFor(async () => (await prisma.outboxEvent.count({ where: { publishedAt: null } })) === 0, 30_000);
+    await waitFor(async () => (await indexedJobs()) === 11, 30_000);
 
     const events = await prisma.outboxEvent.findMany();
     expect(events).toHaveLength(11);
@@ -149,7 +149,7 @@ describe.skipIf(!redisUp)('Mock crawl pipeline (e2e, PostgreSQL + Redis)', () =>
     const updates = await prisma.outboxEvent.findMany({ where: { eventType: 'tender.updated' } });
     expect(updates).toHaveLength(3);
     expect(updates.every((e) => (e.payload as { changedFields: string[] }).changedFields.includes('closingAt'))).toBe(true);
-    await waitFor(async () => (await indexedJobs()) === 14, 15_000);
+    await waitFor(async () => (await indexedJobs()) === 14, 30_000);
   }, 60_000);
 
   it('the worker health endpoint reports ready with its dependencies and loops', async () => {

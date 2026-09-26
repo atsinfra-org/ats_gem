@@ -269,8 +269,11 @@ model Tender {
   watchlistItems         WatchlistItem[]
   versions               TenderVersion[]
   qualityIssues          TenderQualityIssue[]
-  duplicateCandidatesAsA DuplicateCandidate[] @relation("DuplicateCandidateTender")
-  duplicateCandidatesAsB DuplicateCandidate[] @relation("DuplicateCandidateOf")
+  duplicateCandidatesAsA DuplicateCandidate[]     @relation("DuplicateCandidateTender")
+  duplicateCandidatesAsB DuplicateCandidate[]     @relation("DuplicateCandidateOf")
+  /// Phase 7: weighted full-text vector, maintained by a DB trigger (see migration phase7_search) and
+  /// rebuilt by `search:reindex`. Never written by application code.
+  searchVector           Unsupported("tsvector")? @map("search_vector")
   requirements           TenderRequirement[]
   events                 TenderEvent[]
   corrigenda             TenderCorrigendum[]
@@ -283,6 +286,15 @@ model Tender {
   @@index([procuringEntityId])
   /// Backs DeduplicationEngine's trigram title-similarity queries (docs/ARCHITECTURE.md Sec 6.5).
   @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "tenders_title_trgm_idx")
+  @@index([searchVector], type: Gin, map: "tenders_search_vector_gin_idx")
+  @@index([referenceNumberNormalized(ops: raw("gin_trgm_ops"))], type: Gin, map: "tenders_reference_norm_trgm_idx")
+  @@index([stateCode, publishedAt(sort: Desc), id(sort: Desc)], map: "tenders_state_published_idx")
+  @@index([closingAt], map: "tenders_closing_at_idx")
+  @@index([openingAt], map: "tenders_opening_at_idx")
+  @@index([estimatedValue], map: "tenders_estimated_value_idx")
+  @@index([emdAmount], map: "tenders_emd_amount_idx")
+  @@index([tenderFee], map: "tenders_tender_fee_idx")
+  @@index([tenderTypeKey], map: "tenders_tender_type_key_idx")
   @@map("tenders")
 }
 
@@ -317,6 +329,7 @@ model TenderSourceRecord {
 
   @@unique([sourceId, externalTenderId])
   @@index([tenderId])
+  @@index([sourceId, tenderId], map: "tender_source_records_source_tender_idx")
   @@map("tender_source_records")
 }
 
@@ -377,7 +390,11 @@ model User {
   invitationsSent         OrganizationInvitation[] @relation("OrganizationInvitationInvitedBy")
   savedSearches           SavedSearch[]
   watchlistItems          WatchlistItem[]
+  searchHistory           SearchHistory[]
   notifications           Notification[]
+  notificationPreferences NotificationPreference[]
+  notificationSettings    NotificationSettings?
+  notificationDeliveries  NotificationDelivery[]
   auditLogsAsActor        AuditLog[]               @relation("AuditLogActor")
 
   @@index([status])
@@ -540,6 +557,7 @@ model Organization {
   members       OrganizationMember[]
   invitations   OrganizationInvitation[]
   savedSearches SavedSearch[]
+  notifications Notification[]
 
   @@unique([gstin])
   @@map("organizations")
@@ -869,19 +887,23 @@ model TenderCorrigendum {
 /// fields grows with the search engine (Phase 4/5), and a saved search should not need a migration
 /// every time it does. `search/list-tenders.dto.ts` is the schema the criteria are validated against.
 model SavedSearch {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  createdBy      String   @map("created_by") @db.Uuid
+  id             String                    @id @default(uuid(7)) @db.Uuid
+  organizationId String                    @map("organization_id") @db.Uuid
+  createdBy      String                    @map("created_by") @db.Uuid
   name           String
-  criteria       Json     @default("{}")
-  isActive       Boolean  @default(true) @map("is_active")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  criteria       Json                      @default("{}")
+  isActive       Boolean                   @default(true) @map("is_active")
+  /// Alerts are opt-in per saved search (Phase 8): OFF never notifies, IMMEDIATE notifies per matching new tender
+  /// (rate-capped, overflow folds into the digest), DAILY only sends the daily digest.
+  alertFrequency SavedSearchAlertFrequency @default(OFF) @map("alert_frequency")
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   creator      User         @relation(fields: [createdBy], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
+  @@index([alertFrequency], map: "saved_searches_alerting_idx")
   @@map("saved_searches")
 }
 
@@ -902,26 +924,160 @@ model WatchlistItem {
   @@map("watchlist_items")
 }
 
-/// In-app notification record. Foundation only: nothing delivers these over email/SMS/push yet
-/// (Phase 7). `type` is free text, not an enum - the set of notification types will keep growing
-/// as features land, which is exactly the case docs/DATABASE.md's conventions call out for a
-/// lookup/text field rather than a Postgres enum.
+/// In-app notification record (Phase 8). `type` stays text (the set grows with features) but every writer goes
+/// through `notification-types.ts`, which is the closed list. `dedupKey` is deterministic per underlying event so a
+/// retried job, re-ingested tender or repeated request can never create a second notification for the same user.
 model Notification {
-  id         String    @id @default(uuid(7)) @db.Uuid
-  userId     String    @map("user_id") @db.Uuid
-  type       String
-  title      String
-  message    String
-  entityType String?   @map("entity_type")
-  entityId   String?   @map("entity_id") @db.Uuid
-  isRead     Boolean   @default(false) @map("is_read")
-  readAt     DateTime? @map("read_at") @db.Timestamptz(6)
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id              String               @id @default(uuid(7)) @db.Uuid
+  userId          String               @map("user_id") @db.Uuid
+  organizationId  String?              @map("organization_id") @db.Uuid
+  type            String
+  title           String
+  message         String
+  entityType      String?              @map("entity_type")
+  entityId        String?              @map("entity_id") @db.Uuid
+  priority        NotificationPriority @default(NORMAL)
+  /// Small, validated snapshot (tender title/reference/dates, changed fields...) - never free-form payloads.
+  metadata        Json                 @default("{}")
+  dedupKey        String?              @map("dedup_key")
+  /// Outbox event (or schedule slot) that produced it, for tracing.
+  sourceEventId   String?              @map("source_event_id")
+  templateKey     String?              @map("template_key")
+  templateVersion Int?                 @map("template_version")
+  isRead          Boolean              @default(false) @map("is_read")
+  readAt          DateTime?            @map("read_at") @db.Timestamptz(6)
+  /// Hidden from the UI after this time (rows are kept as history).
+  expiresAt       DateTime?            @map("expires_at") @db.Timestamptz(6)
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?          @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  deliveries   NotificationDelivery[]
+
+  @@unique([userId, dedupKey], map: "notifications_user_dedup_key")
+  @@index([userId, isRead, createdAt(sort: Desc)])
+  @@index([userId, type, createdAt(sort: Desc)], map: "notifications_user_type_idx")
+  @@index([organizationId], map: "notifications_organization_idx")
+  @@map("notifications")
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+
+  @@map("notification_priority")
+}
+
+enum SavedSearchAlertFrequency {
+  OFF
+  IMMEDIATE
+  DAILY
+
+  @@map("saved_search_alert_frequency")
+}
+
+enum NotificationCategory {
+  SAVED_SEARCH_ALERTS
+  SAVED_TENDER_UPDATES
+  DEADLINE_REMINDERS
+  CORRIGENDA
+  STATUS_CHANGES
+  SYSTEM
+
+  @@map("notification_category")
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+
+  @@map("notification_channel")
+}
+
+/// QUEUED -> SENDING -> SENT | RETRYING -> ... | FAILED. SENT means "accepted by the configured provider" (for the dev
+/// log driver: captured, not delivered - see provider). SKIPPED records why a channel was not used; DIGEST_PENDING /
+/// DIGESTED track alerts folded into a daily digest email.
+enum DeliveryStatus {
+  QUEUED
+  SENDING
+  SENT
+  RETRYING
+  FAILED
+  SKIPPED
+  DIGEST_PENDING
+  DIGESTED
+
+  @@map("delivery_status")
+}
+
+/// One row per (user, category, channel) the user has explicitly set; anything absent uses the documented defaults.
+model NotificationPreference {
+  id        String               @id @default(uuid(7)) @db.Uuid
+  userId    String               @map("user_id") @db.Uuid
+  category  NotificationCategory
+  channel   NotificationChannel
+  enabled   Boolean
+  updatedAt DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId, isRead, createdAt(sort: Desc)])
-  @@map("notifications")
+  @@unique([userId, category, channel])
+  @@map("notification_preferences")
+}
+
+/// Per-user delivery settings that are not a category toggle. One row per user, created on first save.
+model NotificationSettings {
+  userId               String   @id @map("user_id") @db.Uuid
+  /// Hours before closing at which a deadline reminder fires (subset of 168/72/24/3 in the UI).
+  deadlineOffsetsHours Int[]    @default([24]) @map("deadline_offsets_hours")
+  quietHoursEnabled    Boolean  @default(false) @map("quiet_hours_enabled")
+  quietStart           String?  @map("quiet_start") @db.VarChar(5)
+  quietEnd             String?  @map("quiet_end") @db.VarChar(5)
+  timezone             String   @default("Asia/Kolkata")
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_settings")
+}
+
+/// Email delivery tracking. Only channels that leave the platform get a row (in-app is the notification itself).
+/// Digest rows have no notification; the alerts they contain point at them through `digestId`.
+model NotificationDelivery {
+  id                String              @id @default(uuid(7)) @db.Uuid
+  userId            String              @map("user_id") @db.Uuid
+  notificationId    String?             @map("notification_id") @db.Uuid
+  digestId          String?             @map("digest_id") @db.Uuid
+  channel           NotificationChannel @default(EMAIL)
+  status            DeliveryStatus
+  templateKey       String              @map("template_key")
+  templateVersion   Int                 @map("template_version")
+  provider          String?
+  providerMessageId String?             @map("provider_message_id")
+  attempts          Int                 @default(0)
+  skipReason        String?             @map("skip_reason")
+  /// Sanitized failure description (no addresses, no message content).
+  lastError         String?             @map("last_error")
+  itemCount         Int?                @map("item_count")
+  queuedAt          DateTime?           @map("queued_at") @db.Timestamptz(6)
+  sentAt            DateTime?           @map("sent_at") @db.Timestamptz(6)
+  failedAt          DateTime?           @map("failed_at") @db.Timestamptz(6)
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notification Notification?          @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  digest       NotificationDelivery?  @relation("DigestMembers", fields: [digestId], references: [id], onDelete: SetNull)
+  members      NotificationDelivery[] @relation("DigestMembers")
+
+  @@unique([notificationId, channel], map: "notification_deliveries_notification_channel_key")
+  @@index([status, createdAt], map: "notification_deliveries_status_idx")
+  @@index([userId, createdAt(sort: Desc)], map: "notification_deliveries_user_idx")
+  @@index([userId, status], map: "notification_deliveries_user_status_idx")
+  @@index([digestId], map: "notification_deliveries_digest_idx")
+  @@map("notification_deliveries")
 }
 
 // ─── Audit logging (Phase 2) ─────────────────────────────────────────────────
@@ -1180,4 +1336,73 @@ model TenderQualityIssue {
   @@index([tenderId])
   @@index([severity, resolvedAt])
   @@map("tender_quality_issues")
+}
+
+// ─── Search & discovery (Phase 7) ───────────────────────────────────────────
+
+enum SearchEventType {
+  SEARCH_SUBMITTED
+  FILTER_APPLIED
+  FILTER_REMOVED
+  SORT_CHANGED
+  RESULT_OPENED
+  RESULT_SAVED
+  SEARCH_SAVED
+  SUGGESTION_SELECTED
+
+  @@map("search_event_type")
+}
+
+/// Per-user search history. Only authenticated users are recorded (anonymous searches are never
+/// stored). Deduplicated by (user, dedupKey = hash of normalized query + filters); repeated searches
+/// bump `searchCount`/`lastSearchedAt` instead of adding rows. Deleted with the user.
+model SearchHistory {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  organizationId  String?  @map("organization_id") @db.Uuid
+  queryNormalized String   @map("query_normalized")
+  filters         Json     @default("{}")
+  dedupKey        String   @map("dedup_key") @db.Char(64)
+  searchCount     Int      @default(1) @map("search_count")
+  firstSearchedAt DateTime @default(now()) @map("first_searched_at") @db.Timestamptz(6)
+  lastSearchedAt  DateTime @default(now()) @map("last_searched_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupKey])
+  @@index([userId, lastSearchedAt(sort: Desc)])
+  @@index([queryNormalized, lastSearchedAt])
+  @@map("search_history")
+}
+
+/// Append-only search analytics foundation (Phase 10 consumes it). No FK to users on purpose: events
+/// outlive an account; they hold only ids and normalized text, never credentials or tokens.
+/// Retention: purged daily beyond SEARCH_EVENT_RETENTION_DAYS (default 180) by maintenance.search-events-purge (docs/ARCHITECTURE.md Sec 20.13).
+model SearchEvent {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  eventType       SearchEventType @map("event_type")
+  userId          String?         @map("user_id") @db.Uuid
+  organizationId  String?         @map("organization_id") @db.Uuid
+  queryNormalized String?         @map("query_normalized")
+  payload         Json            @default("{}")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([eventType, createdAt])
+  @@index([createdAt])
+  @@map("search_events")
+}
+
+/// One row per reindex/verify run - the observable record behind `search:reindex` and search health.
+model SearchIndexRun {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  kind        String
+  status      String
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  processed   Int       @default(0)
+  failed      Int       @default(0)
+  details     Json      @default("{}")
+
+  @@index([startedAt(sort: Desc)])
+  @@map("search_index_runs")
 }

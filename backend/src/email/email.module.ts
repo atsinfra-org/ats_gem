@@ -20,5 +20,6 @@ import { SendEmailHandler } from './send-email.handler';
     },
     SendEmailHandler,
   ],
+  exports: [EmailTransport],
 })
 export class EmailModule {}

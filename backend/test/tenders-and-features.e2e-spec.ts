@@ -200,8 +200,8 @@ describe('Tenders, taxonomy and user features (e2e, PostgreSQL)', () => {
   describe('notifications', () => {
     it('lists, reports an unread count, and supports marking one or all as read', async () => {
       const user = await register('notify-user@example.com');
-      await notifications.create({ userId: user.userId, type: 'SYSTEM', title: 'Welcome', message: 'Thanks for joining.' });
-      await notifications.create({ userId: user.userId, type: 'SYSTEM', title: 'Second', message: 'Another one.' });
+      await notifications.createIfNew({ userId: user.userId, type: 'ACCOUNT', title: 'Welcome', message: 'Thanks for joining.', dedupKey: 'test:1' });
+      await notifications.createIfNew({ userId: user.userId, type: 'ACCOUNT', title: 'Second', message: 'Another one.', dedupKey: 'test:2' });
 
       const list = await request(app.getHttpServer()).get('/api/v1/notifications').set(auth(user.accessToken)).expect(200);
       expect(list.body.data).toHaveLength(2);
@@ -219,7 +219,7 @@ describe('Tenders, taxonomy and user features (e2e, PostgreSQL)', () => {
     it('never returns another user’s notifications', async () => {
       const owner = await register('notify-owner@example.com');
       const stranger = await register('notify-stranger@example.com');
-      await notifications.create({ userId: owner.userId, type: 'SYSTEM', title: 'Private', message: 'For owner only.' });
+      await notifications.createIfNew({ userId: owner.userId, type: 'ACCOUNT', title: 'Private', message: 'For owner only.', dedupKey: 'test:3' });
 
       const res = await request(app.getHttpServer()).get('/api/v1/notifications').set(auth(stranger.accessToken)).expect(200);
       expect(res.body.data).toHaveLength(0);

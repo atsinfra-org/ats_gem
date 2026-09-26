@@ -6,7 +6,7 @@ const eventId = '0199a3b2-0000-7000-8000-00000000000e';
 const tenderId = '0199a3b2-0000-7000-8000-00000000000a';
 
 describe('outbox routing', () => {
-  it.each(['tender.created', 'tender.updated', 'tender.closed'] as const)('%s → search indexing job', (eventType) => {
+  it.each(['tender.created', 'tender.updated', 'tender.closed'] as const)('%s → search indexing job and notification dispatch', (eventType) => {
     const payload =
       eventType === 'tender.created'
         ? { tenderId, sourceId: null }
@@ -15,6 +15,17 @@ describe('outbox routing', () => {
           : { tenderId, closedAt: '2026-09-24T09:30:00.000Z' };
     expect(routeEvent({ id: eventId, eventType, payload, correlationId: null })).toEqual([
       { name: 'search.index-tender', payload: { tenderId, eventId, eventType } },
+      { name: 'notification.dispatch', payload: { eventId, eventType, subject: { type: 'tender', id: tenderId } } },
+    ]);
+  });
+
+  it('corrigendum and security events route to notification dispatch only', () => {
+    const corrigendumId = '0199a3b2-0000-7000-8000-00000000000c';
+    expect(routeEvent({ id: eventId, eventType: 'tender.corrigendum_created', payload: { tenderId, corrigendumId }, correlationId: null })).toEqual([
+      { name: 'notification.dispatch', payload: { eventId, eventType: 'tender.corrigendum_created', subject: { type: 'tender', id: tenderId } } },
+    ]);
+    expect(routeEvent({ id: eventId, eventType: 'user.security_event', payload: { userId: tenderId, kind: 'PASSWORD_CHANGED' }, correlationId: null })).toEqual([
+      { name: 'notification.dispatch', payload: { eventId, eventType: 'user.security_event', subject: { type: 'user', id: tenderId } } },
     ]);
   });
 
@@ -35,6 +46,8 @@ describe('outbox routing', () => {
       'tender.updated',
       'tender.closed',
       'tender.source_linked',
+      'tender.corrigendum_created',
+      'user.security_event',
       'document.created',
       'user.created',
       'organization.created',

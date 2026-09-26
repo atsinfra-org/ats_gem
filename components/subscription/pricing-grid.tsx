@@ -2,31 +2,22 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
 import { PricingCard } from "@/components/subscription/pricing-card";
-import { ConfirmModal } from "@/components/modals/confirm-modal";
 import { pricingPlans } from "@/lib/mock/subscriptions";
-import { changePlan } from "@/lib/api/subscriptions";
 import { cn } from "@/lib/utils";
 import { useAuthDialog } from "@/lib/store/auth-dialog-store";
 
-export function PricingGrid({ mode = "public", currentPlanId = "professional" }: { mode?: "public" | "app"; currentPlanId?: string }) {
+/** Informational only: billing is not implemented, so choosing a plan just leads to signup/contact. */
+export function PricingGrid() {
   const router = useRouter();
   const { open: openAuth } = useAuthDialog();
   const [billingCycle, setBillingCycle] = React.useState<"monthly" | "yearly">("monthly");
-  const [confirmPlan, setConfirmPlan] = React.useState<string | null>(null);
-  const [loadingPlan, setLoadingPlan] = React.useState<string | null>(null);
-
-  async function handleConfirm() {
-    if (!confirmPlan) return;
-    setLoadingPlan(confirmPlan);
-    await changePlan(confirmPlan);
-    setLoadingPlan(null);
-    toast.success("Plan updated successfully");
-  }
 
   return (
     <div>
+      <p className="mx-auto mb-6 max-w-xl rounded-md border border-border bg-secondary/40 px-4 py-2 text-center text-sm text-muted-foreground">
+        Pricing shown is indicative. Online purchase and subscriptions are not available yet - create an account to get started.
+      </p>
       <div className="mb-8 flex justify-center">
         <div className="inline-flex items-center rounded-lg border border-border bg-card p-1">
           {(["monthly", "yearly"] as const).map((cycle) => (
@@ -38,7 +29,7 @@ export function PricingGrid({ mode = "public", currentPlanId = "professional" }:
                 billingCycle === cycle ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
               )}
             >
-              {cycle} {cycle === "yearly" && <span className="text-xs">(Save 15%)</span>}
+              {cycle}
             </button>
           ))}
         </div>
@@ -50,30 +41,12 @@ export function PricingGrid({ mode = "public", currentPlanId = "professional" }:
             key={plan.id}
             plan={plan}
             billingCycle={billingCycle}
-            currentPlan={mode === "app" && plan.id === currentPlanId}
-            loading={loadingPlan === plan.id}
-            onSelect={() => {
-              if (mode === "public") {
-                if (plan.id === "enterprise") router.push("/contact");
-                else openAuth();
-              } else {
-                if (plan.id === "enterprise") router.push("/contact");
-                else setConfirmPlan(plan.id);
-              }
-            }}
+            currentPlan={false}
+            loading={false}
+            onSelect={() => (plan.id === "enterprise" ? router.push("/contact") : openAuth())}
           />
         ))}
       </div>
-
-      <ConfirmModal
-        open={!!confirmPlan}
-        onOpenChange={(open) => !open && setConfirmPlan(null)}
-        destructive={false}
-        title="Confirm plan change"
-        description="Your billing will be updated immediately and prorated for the current cycle."
-        confirmLabel="Confirm Change"
-        onConfirm={handleConfirm}
-      />
     </div>
   );
 }

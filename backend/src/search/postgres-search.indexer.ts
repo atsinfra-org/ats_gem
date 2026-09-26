@@ -1,23 +1,21 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../database/prisma.service';
 import { SearchIndexer, type IndexResult } from './search-indexer';
+import { SearchIndexService } from './search-index.service';
 
 /**
- * Postgres full-text search needs no separate index write: from Phase 4 the tender's tsvector is
- * a generated column maintained by Postgres itself in the same transaction as the row. This
- * indexer therefore only confirms the tender exists; the queue hop is kept so switching to
- * OpenSearch later changes the implementation, not the pipeline.
+ * Recomputes one tender search vector. The DB trigger already keeps it current for changes to the
+ * tender row itself; this job additionally catches changes the trigger cannot see (a renamed
+ * category or entity) and gives every tender event an observable, retried, idempotent indexing step.
  */
 @Injectable()
 export class PostgresSearchIndexer extends SearchIndexer {
   readonly provider = 'postgres';
 
-  constructor(private readonly prisma: PrismaService) {
+  constructor(private readonly index: SearchIndexService) {
     super();
   }
 
   async indexTender(tenderId: string): Promise<IndexResult> {
-    const exists = await this.prisma.tender.count({ where: { id: tenderId } });
-    return exists ? { indexed: true, reason: 'maintained-by-postgres' } : { indexed: false, reason: 'tender-not-found' };
+    return (await this.index.refreshTender(tenderId)) ? { indexed: true, reason: 'maintained-by-postgres' } : { indexed: false, reason: 'tender-not-found' };
   }
 }

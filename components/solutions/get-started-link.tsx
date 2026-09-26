@@ -7,7 +7,7 @@ import { useAuthDialog } from "@/lib/store/auth-dialog-store";
 export function GetStartedLink() {
   const { open: openAuth } = useAuthDialog();
   return (
-    <Button variant="link" className="mt-4 px-0" onClick={openAuth}>
+    <Button size="lg" onClick={openAuth}>
       Get Started <ArrowRight className="h-3.5 w-3.5" />
     </Button>
   );

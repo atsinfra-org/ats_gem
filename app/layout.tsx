@@ -2,9 +2,12 @@ import type { Metadata } from "next";
 import { Poppins, Instrument_Serif, IBM_Plex_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
-import { AppStoreProvider } from "@/lib/store/app-store";
 import { AuthDialogProvider } from "@/lib/store/auth-dialog-store";
 import { AuthDialog } from "@/components/auth/auth-dialog";
+import { SessionProvider } from "@/lib/auth/session-context";
+import { WatchlistProvider } from "@/lib/store/watchlist-store";
+import { NotificationsProvider } from "@/lib/store/notifications-store";
+import { SessionExpiredWatcher } from "@/components/auth/session-expired-watcher";
 import "./globals.css";
 
 const poppins = Poppins({
@@ -29,26 +32,25 @@ const plexMono = IBM_Plex_Mono({
   display: "swap",
 });
 
+const DESCRIPTION = "ATS Gem is a tender discovery platform that helps Indian businesses find, track and organize government and private tenders.";
+
 export const metadata: Metadata = {
   title: {
     default: "ATS Gem — Find. Track. Win. Tenders.",
     template: "%s | ATS Gem",
   },
-  description:
-    "ATS Gem is a tender intelligence platform that helps Indian businesses discover, track and win government and private tenders with real-time alerts and verified data.",
+  description: DESCRIPTION,
   metadataBase: new URL("https://atsgem.example.com"),
   openGraph: {
     title: "ATS Gem — Find. Track. Win. Tenders.",
-    description:
-      "Discover, track and win government and private tenders with real-time alerts and verified data.",
+    description: DESCRIPTION,
     siteName: "ATS Gem",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
     title: "ATS Gem — Find. Track. Win. Tenders.",
-    description:
-      "Discover, track and win government and private tenders with real-time alerts and verified data.",
+    description: DESCRIPTION,
   },
 };
 
@@ -62,13 +64,18 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col antialiased bg-background text-foreground">
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
-          <AppStoreProvider>
-            <AuthDialogProvider>
-              {children}
-              <AuthDialog />
-              <Toaster richColors position="top-right" closeButton />
-            </AuthDialogProvider>
-          </AppStoreProvider>
+          <SessionProvider>
+            <WatchlistProvider>
+              <NotificationsProvider>
+                <AuthDialogProvider>
+                  {children}
+                  <AuthDialog />
+                  <SessionExpiredWatcher />
+                  <Toaster richColors position="top-right" closeButton />
+                </AuthDialogProvider>
+              </NotificationsProvider>
+            </WatchlistProvider>
+          </SessionProvider>
         </ThemeProvider>
       </body>
     </html>

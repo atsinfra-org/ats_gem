@@ -3,6 +3,7 @@ import { Target, Eye, Users2 } from "lucide-react";
 
 export const metadata: Metadata = {
   title: "About Us",
+  alternates: { canonical: "/about" },
   description: "Learn about ATS Gem's mission to make tender discovery simple and transparent for Indian businesses.",
 };
 
@@ -37,19 +38,6 @@ export default function AboutPage() {
           ))}
         </div>
 
-        <div className="mt-16 grid grid-cols-2 gap-6 rounded-xl border border-border bg-card p-8 sm:grid-cols-4">
-          {[
-            ["2021", "Founded"],
-            ["25,000+", "Businesses"],
-            ["1,00,000+", "Live Tenders"],
-            ["200+", "Team Members"],
-          ].map(([value, label]) => (
-            <div key={label} className="text-center">
-              <p className="text-2xl font-bold text-foreground">{value}</p>
-              <p className="text-xs text-muted-foreground">{label}</p>
-            </div>
-          ))}
-        </div>
       </section>
     </div>
   );

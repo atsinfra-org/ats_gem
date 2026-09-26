@@ -1,18 +1,19 @@
 import { Badge } from "@/components/ui/badge";
-import type { TenderStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const statusConfig: Record<TenderStatus, { label: string; variant: "success" | "warning" | "danger" | "info" | "secondary" }> = {
-  open: { label: "Open Tender", variant: "success" },
-  closing_soon: { label: "Closing Soon", variant: "warning" },
-  limited: { label: "Limited Tender", variant: "info" },
-  eoi: { label: "EOI", variant: "secondary" },
-  rfp: { label: "RFP", variant: "secondary" },
-  closed: { label: "Closed", variant: "danger" },
+/** Matches the backend's `TenderStatus` enum exactly (backend/docs/DATABASE.md §4). */
+const statusConfig: Record<string, { label: string; variant: "success" | "warning" | "danger" | "info" | "secondary" }> = {
+  UPCOMING: { label: "Upcoming", variant: "info" },
+  OPEN: { label: "Open", variant: "success" },
+  CLOSING_SOON: { label: "Closing Soon", variant: "warning" },
+  CLOSED: { label: "Closed", variant: "secondary" },
+  CANCELLED: { label: "Cancelled", variant: "danger" },
+  AWARDED: { label: "Awarded", variant: "info" },
+  ARCHIVED: { label: "Archived", variant: "secondary" },
 };
 
-export function TenderStatusBadge({ status, className }: { status: TenderStatus; className?: string }) {
-  const config = statusConfig[status];
+export function TenderStatusBadge({ status, className }: { status: string; className?: string }) {
+  const config = statusConfig[status] ?? { label: status, variant: "secondary" as const };
   return (
     <Badge variant={config.variant} className={cn("font-semibold", className)}>
       {config.label}

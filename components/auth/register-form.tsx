@@ -11,6 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { register as registerAccount } from "@/lib/api/auth";
+import { ApiError } from "@/lib/api/client";
+import { useSession } from "@/lib/auth/session-context";
 
 const schema = z
   .object({
@@ -27,8 +29,10 @@ const schema = z
 
 type FormValues = z.infer<typeof schema>;
 
-export function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
+export function RegisterForm({ onSuccess }: { onSuccess: (requiresEmailVerification: boolean) => void }) {
   const [showPassword, setShowPassword] = React.useState(false);
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const { refreshUser } = useSession();
   const {
     register,
     handleSubmit,
@@ -37,21 +41,41 @@ export function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
   } = useForm<FormValues>({ resolver: zodResolver(schema) });
 
   async function onSubmit(values: FormValues) {
-    await registerAccount(values);
-    onSuccess();
+    setFormError(null);
+    try {
+      const result = await registerAccount({ name: values.name, email: values.email, password: values.password, acceptTerms: true });
+      await refreshUser();
+      onSuccess(result.requiresEmailVerification);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.code === "EMAIL_ALREADY_REGISTERED") setFormError("An account with this email already exists.");
+        else if (err.code === "VALIDATION_FAILED") setFormError(err.details?.[0]?.message ?? "Please check the form for errors.");
+        else if (err.code === "RATE_LIMITED") setFormError("Too many attempts. Please wait a moment and try again.");
+        else if (err.code === "NETWORK_ERROR" || err.code === "TIMEOUT") setFormError("Could not reach the server. Check your connection and try again.");
+        else setFormError(err.message);
+      } else {
+        setFormError("Something went wrong. Please try again.");
+      }
+    }
   }
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
+      {formError && (
+        <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {formError}
+        </div>
+      )}
+
       <div className="space-y-1.5">
         <Label htmlFor="register-name">Full Name</Label>
-        <Input id="register-name" placeholder="Your name" error={!!errors.name} {...register("name")} />
+        <Input id="register-name" autoComplete="name" placeholder="Your name" error={!!errors.name} {...register("name")} />
         {errors.name && <p className="text-xs text-destructive">{errors.name.message}</p>}
       </div>
 
       <div className="space-y-1.5">
         <Label htmlFor="register-email">Email</Label>
-        <Input id="register-email" type="email" placeholder="you@company.com" error={!!errors.email} {...register("email")} />
+        <Input id="register-email" type="email" autoComplete="email" placeholder="you@company.com" error={!!errors.email} {...register("email")} />
         {errors.email && <p className="text-xs text-destructive">{errors.email.message}</p>}
       </div>
 
@@ -62,6 +86,7 @@ export function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
             <Input
               id="register-password"
               type={showPassword ? "text" : "password"}
+              autoComplete="new-password"
               error={!!errors.password}
               className="pr-10"
               {...register("password")}
@@ -82,6 +107,7 @@ export function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
           <Input
             id="register-confirm"
             type={showPassword ? "text" : "password"}
+            autoComplete="new-password"
             error={!!errors.confirmPassword}
             {...register("confirmPassword")}
           />
@@ -93,8 +119,8 @@ export function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
         <Checkbox id="register-terms" onCheckedChange={(v) => setValue("terms", v === true)} />
         <Label htmlFor="register-terms" className="text-xs font-normal leading-snug text-muted-foreground">
           I agree to the{" "}
-          <Link href="#" className="text-primary hover:underline">Terms of Service</Link> and{" "}
-          <Link href="#" className="text-primary hover:underline">Privacy Policy</Link>.
+          <Link href="/terms" target="_blank" className="text-primary hover:underline">Terms of Service</Link> and{" "}
+          <Link href="/terms#privacy" target="_blank" className="text-primary hover:underline">Privacy Policy</Link>.
         </Label>
       </div>
       {errors.terms && <p className="text-xs text-destructive">{errors.terms.message}</p>}

@@ -3,10 +3,25 @@ export interface EmailMessage {
   template: string;
   /** Template variables. May contain secrets (reset links, OTPs) — never log values. */
   variables: Record<string, string>;
+  /** Pre-rendered content (Phase 8 notification emails). When present, `template` is only an identifier for logs/audit. */
+  subject?: string;
+  text?: string;
+  html?: string;
 }
 
 export interface SendResult {
   messageId: string;
+}
+
+/** The provider rejected the message for a reason retrying cannot fix (invalid recipient, blocked address, bad payload). */
+export class PermanentEmailError extends Error {
+  constructor(
+    message: string,
+    readonly code: string = 'REJECTED',
+  ) {
+    super(message);
+    this.name = 'PermanentEmailError';
+  }
 }
 
 export abstract class EmailTransport {

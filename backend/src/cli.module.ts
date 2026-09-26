@@ -8,6 +8,8 @@ import { OutboxModule } from './outbox/outbox.module';
 import { QueuesModule } from './queues/queues.module';
 import { RedisModule } from './redis/redis.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
+import { SearchIndexService } from './search/search-index.service';
+import { SearchEventsPurgeService } from './search/search-events-purge.service';
 import { BackfillService } from './tenders/backfill.service';
 import { ProcuringEntitiesModule } from './tenders/entities/procuring-entities.module';
 
@@ -23,6 +25,6 @@ import { ProcuringEntitiesModule } from './tenders/entities/procuring-entities.m
     SchedulerModule.forRoot({ runLoop: false }),
     ProcuringEntitiesModule,
   ],
-  providers: [CrawlDispatcher, SeedService, BackfillService],
+  providers: [CrawlDispatcher, SeedService, BackfillService, SearchIndexService, SearchEventsPurgeService],
 })
 export class CliModule {}

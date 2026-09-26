@@ -1,13 +1,6 @@
-import type { TenderDocument } from "@/lib/types";
+import { API_BASE_URL } from "./client";
 
-const delay = (ms = 400) => new Promise((resolve) => setTimeout(resolve, ms));
-
-export async function downloadDocument(_doc: TenderDocument): Promise<{ success: true }> {
-  await delay(1200);
-  return { success: true };
-}
-
-export async function downloadAllDocuments(_tenderId: string): Promise<{ success: true }> {
-  await delay(1800);
-  return { success: true };
+/** Documents are public (same visibility as the tender itself) - no auth header needed for these URLs. */
+export function documentDownloadUrl(tenderId: string, documentId: string): string {
+  return `${API_BASE_URL}/tenders/${tenderId}/documents/${documentId}/download`;
 }

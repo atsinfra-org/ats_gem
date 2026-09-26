@@ -20,6 +20,30 @@ export function formatCompactINR(value: number): string {
   return `₹${value}`;
 }
 
+/** Compact elapsed time for tickers and sync status: "now", "12m", "3h", "2d". */
+export function formatElapsed(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+interface MoneyLike {
+  amount: string;
+  currency: string;
+}
+
+/** Formats a backend `Money` value ({ amount: "12345.00", currency: "INR" }) - `null` becomes "Not disclosed". */
+export function formatMoney(money: MoneyLike | null | undefined): string {
+  if (!money) return "Not disclosed";
+  const value = Number(money.amount);
+  if (!Number.isFinite(value)) return "Not disclosed";
+  if (money.currency !== "INR") return new Intl.NumberFormat("en-IN", { style: "currency", currency: money.currency, maximumFractionDigits: 0 }).format(value);
+  return formatCompactINR(value);
+}
+
 export function hasPassed(dateStr: string): boolean {
   return new Date(dateStr).getTime() < Date.now();
 }

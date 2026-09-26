@@ -1,6 +1,7 @@
 "use client";
 
 import { useNow } from "@/lib/hooks/use-now";
+import { formatElapsed } from "@/lib/utils";
 
 const istClock = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Kolkata",
@@ -10,7 +11,14 @@ const istClock = new Intl.DateTimeFormat("en-GB", {
   hour12: false,
 });
 
-export function StatusLine({ sources, lastCrawlMinutesAgo }: { sources: number; lastCrawlMinutesAgo: number }) {
+function lastCrawl(at: string | null, now: number | null) {
+  if (!at) return "No crawl yet";
+  if (now === null) return "Last crawl -- min ago";
+  const minutes = Math.max(0, Math.floor((now - Date.parse(at)) / 60_000));
+  return minutes < 60 ? `Last crawl ${minutes} min ago` : `Last crawl ${formatElapsed(minutes * 60_000)} ago`;
+}
+
+export function StatusLine({ sources, lastCrawlAt }: { sources: number; lastCrawlAt: string | null }) {
   const now = useNow();
 
   return (
@@ -23,7 +31,7 @@ export function StatusLine({ sources, lastCrawlMinutesAgo }: { sources: number; 
         Live
       </span>
       <span>{sources.toLocaleString("en-IN")} sources</span>
-      <span className="hidden sm:inline">Last crawl {lastCrawlMinutesAgo} min ago</span>
+      <span className="hidden sm:inline">{lastCrawl(lastCrawlAt, now)}</span>
       <span className="ml-auto tabular-nums text-white/70">
         IST {now === null ? "--:--:--" : istClock.format(now)}
       </span>

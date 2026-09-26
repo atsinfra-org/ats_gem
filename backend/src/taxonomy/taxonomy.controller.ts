@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/public.decorator';
 import { TaxonomyService } from './taxonomy.service';
@@ -19,6 +19,18 @@ export class TaxonomyController {
   @Get('categories')
   categories() {
     return this.taxonomy.listCategories();
+  }
+
+  @Public()
+  @Get('sources')
+  sources() {
+    return this.taxonomy.listSources();
+  }
+
+  @Public()
+  @Get('districts')
+  districts(@Query('state') state?: string) {
+    return this.taxonomy.listDistricts(state && /^[A-Z]{2}$/.test(state) ? state : undefined);
   }
 
   @Public()

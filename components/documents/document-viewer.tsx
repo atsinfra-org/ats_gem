@@ -1,19 +1,8 @@
 "use client";
 
+/* eslint-disable react-hooks/set-state-in-effect -- reset probe state when the active document changes */
 import * as React from "react";
-import {
-  ZoomIn,
-  ZoomOut,
-  Search,
-  Download,
-  Printer,
-  Maximize2,
-  FileText,
-  FileSpreadsheet,
-  FileArchive,
-  File,
-} from "lucide-react";
-import { toast } from "sonner";
+import { Download, ExternalLink, FileText, FileWarning } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -21,111 +10,123 @@ import {
 } from "@/components/ui/dialog";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import { Button } from "@/components/ui/button";
-import type { TenderDocument } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import type { TenderDocumentSummary } from "@/lib/api/types";
+import { documentDownloadUrl } from "@/lib/api/documents";
 
-const iconByType = { pdf: FileText, xlsx: FileSpreadsheet, zip: FileArchive, docx: File };
-
+/** PDFs stream through the browser's native viewer via an iframe (Phase 6 brief §16); other types
+ * offer download only - no OCR/text-extraction/preview conversion is implemented. */
 export function DocumentViewer({
   open,
   onOpenChange,
+  tenderId,
   documents,
   activeDocument,
   onSelect,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  documents: TenderDocument[];
-  activeDocument: TenderDocument | null;
-  onSelect: (doc: TenderDocument) => void;
+  tenderId: string;
+  documents: TenderDocumentSummary[];
+  activeDocument: TenderDocumentSummary | null;
+  onSelect: (doc: TenderDocumentSummary) => void;
 }) {
-  const [zoom, setZoom] = React.useState(100);
+  const activeId = activeDocument?.id;
+  const [unavailable, setUnavailable] = React.useState(false);
+
+  const [blobUrl, setBlobUrl] = React.useState<string | null>(null);
+
+  // The API serves documents as attachments from another origin (CSP frame-ancestors + attachment
+  // disposition), so an iframe cannot point at it directly. Fetch the bytes (CORS-enabled) and show
+  // them from a same-origin blob URL; a failed fetch is a real, user-visible "unavailable" state.
+  React.useEffect(() => {
+    if (!open || !activeId) return;
+    let cancelled = false;
+    let created: string | null = null;
+    setUnavailable(false);
+    setBlobUrl(null);
+    fetch(documentDownloadUrl(tenderId, activeId))
+      .then(async (r) => {
+        if (!r.ok) throw new Error("bad status");
+        const blob = new Blob([await r.arrayBuffer()], { type: "application/pdf" });
+        created = URL.createObjectURL(blob);
+        if (!cancelled) setBlobUrl(created);
+      })
+      .catch(() => {
+        if (!cancelled) setUnavailable(true);
+      });
+    return () => {
+      cancelled = true;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [open, activeId, tenderId]);
 
   if (!activeDocument) return null;
+  const url = documentDownloadUrl(tenderId, activeDocument.id);
+  // We only know the document's declared type here, not its actual MIME type (that's returned by
+  // the download response itself) - PDFs are named/typed consistently enough in practice that this
+  // is a reasonable heuristic, and the fallback (download-only) is always safe.
+  const looksLikePdf = activeDocument.fileName.toLowerCase().endsWith(".pdf");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-5xl w-[95vw] h-[85vh] p-0 gap-0 grid grid-rows-[auto_1fr]">
         <VisuallyHidden>
-          <DialogTitle>Document Viewer — {activeDocument.name}</DialogTitle>
+          <DialogTitle>Document Viewer — {activeDocument.fileName}</DialogTitle>
         </VisuallyHidden>
         <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5">
-          <Button variant="ghost" size="icon" onClick={() => setZoom((z) => Math.max(50, z - 10))} aria-label="Zoom out">
-            <ZoomOut className="h-4 w-4" />
-          </Button>
-          <span className="w-12 text-center text-xs text-muted-foreground">{zoom}%</span>
-          <Button variant="ghost" size="icon" onClick={() => setZoom((z) => Math.min(200, z + 10))} aria-label="Zoom in">
-            <ZoomIn className="h-4 w-4" />
-          </Button>
-          <div className="mx-1 h-5 w-px bg-border" />
-          <Button variant="ghost" size="icon" aria-label="Search in document">
-            <Search className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="icon" aria-label="Print" onClick={() => toast.info("Print preview would open here")}>
-            <Printer className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="icon" aria-label="Fullscreen">
-            <Maximize2 className="h-4 w-4" />
-          </Button>
-          <div className="ml-auto">
-            <Button size="sm" onClick={() => toast.success("Document download started", { description: activeDocument.name })}>
-              <Download className="h-3.5 w-3.5" /> Download
+          <p className="truncate text-sm font-medium text-foreground">{activeDocument.fileName}</p>
+          <div className="ml-auto flex items-center gap-2">
+            <Button variant="outline" size="sm" asChild>
+              <a href={url} target="_blank" rel="noreferrer">
+                <ExternalLink className="h-3.5 w-3.5" /> Open in New Tab
+              </a>
+            </Button>
+            <Button size="sm" asChild>
+              <a href={url} download={activeDocument.fileName}>
+                <Download className="h-3.5 w-3.5" /> Download
+              </a>
             </Button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-[220px_1fr_240px] overflow-hidden">
+        <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] overflow-hidden">
           <div className="hidden md:block overflow-y-auto border-r border-border p-2">
-            {documents.map((doc) => {
-              const Icon = iconByType[doc.type];
-              return (
-                <button
-                  key={doc.id}
-                  onClick={() => onSelect(doc)}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors",
-                    activeDocument.id === doc.id ? "bg-primary/10 text-primary" : "text-foreground/80 hover:bg-secondary"
-                  )}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span className="truncate">{doc.name}</span>
-                </button>
-              );
-            })}
+            {documents.map((doc) => (
+              <button
+                key={doc.id}
+                onClick={() => onSelect(doc)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors",
+                  activeDocument.id === doc.id ? "bg-primary/10 text-primary" : "text-foreground/80 hover:bg-secondary"
+                )}
+              >
+                <FileText className="h-4 w-4 shrink-0" />
+                <span className="truncate">{doc.fileName}</span>
+              </button>
+            ))}
           </div>
 
-          <div className="flex items-center justify-center overflow-auto bg-secondary/40 p-6">
-            <div
-              className="flex aspect-[1/1.414] w-full max-w-md flex-col items-center justify-center gap-3 rounded-md border border-border bg-white shadow-md"
-              style={{ transform: `scale(${zoom / 100})`, transformOrigin: "center" }}
-            >
-              <FileText className="h-16 w-16 text-muted-foreground/40" />
-              <p className="px-6 text-center text-xs text-muted-foreground">
-                Preview for {activeDocument.name}
-                <br />
-                Document streaming will be connected to backend storage.
-              </p>
-            </div>
-          </div>
-
-          <div className="hidden md:block overflow-y-auto border-l border-border p-4">
-            <h4 className="text-sm font-semibold text-foreground">Document Info</h4>
-            <dl className="mt-3 space-y-3 text-xs">
-              <div>
-                <dt className="text-muted-foreground">File Name</dt>
-                <dd className="mt-0.5 font-medium text-foreground break-all">{activeDocument.name}</dd>
+          <div className="overflow-auto bg-secondary/40">
+            {unavailable ? (
+              <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+                <FileWarning className="h-14 w-14 text-muted-foreground/50" aria-hidden="true" />
+                <p className="max-w-xs text-sm text-muted-foreground">This document is currently unavailable. Please try again later.</p>
               </div>
-              <div>
-                <dt className="text-muted-foreground">File Type</dt>
-                <dd className="mt-0.5 font-medium uppercase text-foreground">{activeDocument.type}</dd>
+            ) : looksLikePdf ? (
+              blobUrl ? (
+                <iframe title={activeDocument.fileName} src={blobUrl} className="h-full w-full border-0" />
+              ) : (
+                <p className="p-6 text-center text-sm text-muted-foreground" role="status">Loading document…</p>
+              )
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+                <FileText className="h-16 w-16 text-muted-foreground/40" />
+                <p className="max-w-xs text-sm text-muted-foreground">
+                  Inline preview isn&apos;t available for this file type. Use Download or Open in New Tab.
+                </p>
               </div>
-              <div>
-                <dt className="text-muted-foreground">File Size</dt>
-                <dd className="mt-0.5 font-medium text-foreground">
-                  {activeDocument.sizeKb >= 1024 ? `${(activeDocument.sizeKb / 1024).toFixed(1)} MB` : `${activeDocument.sizeKb} KB`}
-                </dd>
-              </div>
-            </dl>
+            )}
           </div>
         </div>
       </DialogContent>

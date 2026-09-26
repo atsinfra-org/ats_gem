@@ -5,9 +5,7 @@ const columns = [
     title: "Platform",
     links: [
       { label: "Tender Search", href: "/tenders" },
-      { label: "Tender Alerts", href: "/alerts" },
       { label: "Saved Tenders", href: "/saved-tenders" },
-      { label: "Bid Tracking", href: "/my-bids" },
     ],
   },
   {
@@ -24,7 +22,6 @@ const columns = [
     links: [
       { label: "Help Center", href: "/resources" },
       { label: "FAQ", href: "/faq" },
-      { label: "Tender Guides", href: "/resources" },
       { label: "Contact", href: "/contact" },
     ],
   },
@@ -70,9 +67,8 @@ export function PublicFooter() {
         <div className="mt-12 flex flex-col gap-4 border-t border-white/10 pt-6 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-white/50">© 2026 ATS Gem. All rights reserved.</p>
           <div className="flex gap-5 text-xs text-white/50">
-            <Link href="#" className="hover:text-white">Privacy</Link>
-            <Link href="#" className="hover:text-white">Terms</Link>
-            <Link href="#" className="hover:text-white">Cookie Policy</Link>
+            <Link href="/terms#privacy" className="hover:text-white">Privacy</Link>
+            <Link href="/terms" className="hover:text-white">Terms</Link>
           </div>
         </div>
       </div>

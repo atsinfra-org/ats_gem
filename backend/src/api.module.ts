@@ -6,6 +6,7 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { AppConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
 import { LoggingModule } from './logging/logging.module';
+import { MarketModule } from './market/market.module';
 import { HealthModule } from './modules/health/health.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrganizationsModule } from './organizations/organizations.module';
@@ -18,6 +19,7 @@ import { OrgRoleGuard } from './rbac/org-role.guard';
 import { PermissionsGuard } from './rbac/permissions.guard';
 import { RedisModule } from './redis/redis.module';
 import { SavedSearchesModule } from './saved-searches/saved-searches.module';
+import { SearchModule } from './search/search.module';
 import { TaxonomyModule } from './taxonomy/taxonomy.module';
 import { TendersModule } from './tenders/tenders.module';
 import { ProcuringEntitiesModule } from './tenders/entities/procuring-entities.module';
@@ -56,6 +58,8 @@ import { WatchlistModule } from './watchlist/watchlist.module';
     UsersModule,
     OrganizationsModule,
     TaxonomyModule,
+    MarketModule,
+    SearchModule,
     TendersModule,
     ProcuringEntitiesModule,
     DuplicateCandidatesModule,

@@ -1,27 +1,29 @@
 import type { Metadata } from "next";
+import { JsonLd } from "@/components/seo/json-ld";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 
 export const metadata: Metadata = {
   title: "FAQ",
   description: "Frequently asked questions about ATS Gem's tender discovery platform.",
+  alternates: { canonical: "/faq" },
 };
 
 const faqs = [
-  { q: "What is ATS Gem?", a: "ATS Gem is a tender intelligence platform that aggregates government and private tenders from thousands of sources across India, helping businesses discover, track and win opportunities." },
-  { q: "How often is tender data refreshed?", a: "Our crawlers refresh most e-procurement sources every 15-30 minutes, ensuring you see new tenders almost as soon as they're published." },
-  { q: "Is there a free plan?", a: "Yes, our Free plan lets you explore up to 50 tender views per month with basic search filters." },
-  { q: "Can I set up alerts for specific categories?", a: "Yes, Professional and Business plans support unlimited saved searches with instant, daily or weekly alert frequencies." },
-  { q: "Do you provide tender documents?", a: "Yes, verified tender notices, BOQs, drawings and technical documents are available for download on Professional plans and above." },
-  { q: "How do I cancel my subscription?", a: "You can cancel anytime from the Billing page inside your dashboard. Your access continues until the end of the current billing cycle." },
-  { q: "Do you support global tenders?", a: "Yes, we track select international tenders relevant to Indian exporters and consultants under the Global Tenders category." },
+  { q: "What is ATS Gem?", a: "ATS Gem is a tender discovery platform. It ingests tenders from connected sources into a single searchable, de-duplicated record with structured details and documents." },
+  { q: "Which sources are connected?", a: "Live portal integrations are not yet available; the platform currently runs on a development data source while production integrations are prepared." },
+  { q: "Are alerts and email notifications available?", a: "Not yet. You can save tenders and searches and view in-app notifications, but automated alert delivery by email, SMS or WhatsApp is planned, not live." },
+  { q: "Can I download tender documents?", a: "Yes, where a tender has documents attached, they can be opened or downloaded from the tender's Documents tab." },
+  { q: "Can I buy a subscription?", a: "Not yet. Billing is not implemented, and the pricing page is indicative only." },
+  { q: "Can my team share an account?", a: "You can invite colleagues to your organization as members or viewers from the Company Profile page." },
 ];
 
 export default function FaqPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 lg:px-8">
+      <JsonLd data={{ "@context": "https://schema.org", "@type": "FAQPage", mainEntity: faqs.map((f) => ({ "@type": "Question", name: f.q, acceptedAnswer: { "@type": "Answer", text: f.a } })) }} />
       <div className="text-center">
         <h1 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">Frequently Asked Questions</h1>
-        <p className="mt-3 text-muted-foreground">Can&apos;t find what you&apos;re looking for? <a href="/contact" className="text-primary hover:underline">Contact our team</a>.</p>
+        <p className="mt-3 text-muted-foreground">Can&apos;t find what you&apos;re looking for? <a href="/contact" className="text-primary underline underline-offset-2">Contact our team</a>.</p>
       </div>
 
       <div className="mt-12 rounded-xl border border-border bg-card px-6">

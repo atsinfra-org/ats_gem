@@ -4,6 +4,8 @@ import { ApiPayload } from '../common/http/api-response';
 import { toMoney } from '../common/money';
 import { PrismaService } from '../database/prisma.service';
 import type { Prisma, Tender } from '../generated/prisma/client';
+import { SearchHistoryService } from '../search/search-history.service';
+import { SearchService } from '../search/search.service';
 import type { ListTendersQueryDto } from './dto/list-tenders.query.dto';
 
 type TenderWithTaxonomy = Tender & {
@@ -60,30 +62,35 @@ const ANONYMOUS_PAGE_SIZE_CAP = 20;
 
 @Injectable()
 export class TendersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly search: SearchService,
+    private readonly history: SearchHistoryService,
+  ) {}
 
-  async list(query: ListTendersQueryDto, viewerId: string | undefined) {
-    const page = viewerId ? (query.page ?? 1) : 1;
-    const pageSize = viewerId ? (query.pageSize ?? 20) : Math.min(query.pageSize ?? ANONYMOUS_PAGE_SIZE_CAP, ANONYMOUS_PAGE_SIZE_CAP);
-    const where = this.buildWhere(query);
+  async list(query: ListTendersQueryDto, viewer: { id: string; organizationId?: string } | undefined) {
+    const page = viewer ? (query.page ?? 1) : 1;
+    const pageSize = viewer ? (query.pageSize ?? 20) : Math.min(query.pageSize ?? ANONYMOUS_PAGE_SIZE_CAP, ANONYMOUS_PAGE_SIZE_CAP);
 
-    // Two independent reads, not a `$transaction([...])` batch: a search page's count and rows
-    // never need to be transactionally consistent with each other, and running them concurrently
-    // via `Promise.all` on Prisma 7.10's pg adapter has been observed to trip the driver's
-    // "client.query() while already executing a query" deprecation warning — harmless, but avoided
-    // by keeping them sequential (a search request is not a performance-critical hot path).
-    const total = await this.prisma.tender.count({ where });
-    const rows = await this.prisma.tender.findMany({
-      where,
-      include: TAXONOMY_INCLUDE,
-      orderBy: { [query.sortBy ?? 'publishedAt']: query.sortOrder ?? 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
+    // Matching, ranking, sorting and paging happen in SearchService (ids + match reasons only); this
+    // method hydrates just the requested page into the listing projection - no per-row queries.
+    const outcome = await this.search.search(query, { page, pageSize });
+    const ids = outcome.hits.map((h) => h.id);
+    const rows = ids.length ? await this.prisma.tender.findMany({ where: { id: { in: ids } }, include: TAXONOMY_INCLUDE }) : [];
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const savedIds = await this.savedTenderIds(viewer?.id, ids);
+    const data = outcome.hits.flatMap((h) => {
+      const row = byId.get(h.id);
+      return row ? [{ ...this.toSummary(row, savedIds.has(row.id)), matchReason: h.reason }] : [];
     });
 
-    const savedIds = await this.savedTenderIds(viewerId, rows.map((r) => r.id));
-    const data = rows.map((row) => this.toSummary(row, savedIds.has(row.id)));
-    return new ApiPayload(data, { pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) } });
+    if (viewer && page === 1 && (query.q || query.reference)) void this.history.record(viewer, query.q ?? query.reference, query as unknown as Record<string, unknown>);
+
+    return new ApiPayload(data, {
+      pagination: { page, pageSize, total: outcome.total, totalPages: Math.max(1, Math.ceil(outcome.total / pageSize)), totalCapped: outcome.totalCapped },
+      sort: outcome.sort,
+      ranked: outcome.ranked,
+    });
   }
 
   async detail(id: string, viewerId: string | undefined) {
@@ -91,26 +98,6 @@ export class TendersService {
     if (!tender) throw new AppError('TENDER_NOT_FOUND', 'Tender not found.');
     const savedIds = await this.savedTenderIds(viewerId, [tender.id]);
     return this.toDetail(tender, savedIds.has(tender.id));
-  }
-
-  private buildWhere(query: ListTendersQueryDto): Prisma.TenderWhereInput {
-    const where: Prisma.TenderWhereInput = { deletedAt: null };
-    if (query.q) where.title = { contains: query.q, mode: 'insensitive' };
-    if (query.state) where.stateCode = query.state;
-    if (query.category) where.categoryId = query.category;
-    if (query.status) where.status = query.status;
-    if (query.procuringEntity) where.procuringEntityId = query.procuringEntity;
-    if (query.district) where.districtId = query.district;
-    if (query.minValue || query.maxValue) {
-      where.estimatedValue = { gte: query.minValue, lte: query.maxValue };
-    }
-    if (query.publishedFrom || query.publishedTo) {
-      where.publishedAt = { gte: query.publishedFrom ? new Date(query.publishedFrom) : undefined, lte: query.publishedTo ? new Date(query.publishedTo) : undefined };
-    }
-    if (query.closingFrom || query.closingTo) {
-      where.closingAt = { gte: query.closingFrom ? new Date(query.closingFrom) : undefined, lte: query.closingTo ? new Date(query.closingTo) : undefined };
-    }
-    return where;
   }
 
   private async savedTenderIds(viewerId: string | undefined, tenderIds: string[]): Promise<Set<string>> {

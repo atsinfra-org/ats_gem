@@ -11,7 +11,7 @@ export class SavedSearchesService {
 
   create(organizationId: string, userId: string, dto: CreateSavedSearchDto): Promise<SavedSearch> {
     return this.prisma.savedSearch.create({
-      data: { organizationId, createdBy: userId, name: dto.name, criteria: dto.criteria as Prisma.InputJsonValue },
+      data: { organizationId, createdBy: userId, name: dto.name, criteria: dto.criteria as Prisma.InputJsonValue, alertFrequency: dto.alertFrequency ?? 'OFF' },
     });
   }
 
@@ -23,7 +23,7 @@ export class SavedSearchesService {
     await this.requireOwnedByOrg(organizationId, id);
     return this.prisma.savedSearch.update({
       where: { id },
-      data: { name: dto.name, isActive: dto.isActive, criteria: dto.criteria as Prisma.InputJsonValue | undefined },
+      data: { name: dto.name, isActive: dto.isActive, alertFrequency: dto.alertFrequency, criteria: dto.criteria as Prisma.InputJsonValue | undefined },
     });
   }
 

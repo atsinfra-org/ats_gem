@@ -146,7 +146,10 @@ export class AuthService {
 
   async verifyEmail(dto: VerifyEmailDto): Promise<void> {
     const userId = await this.authTokens.consume(dto.token, 'EMAIL_VERIFY');
-    await this.prisma.user.update({ where: { id: userId }, data: { isEmailVerified: true } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { isEmailVerified: true } });
+      await this.outbox.record(tx, 'user.security_event', { userId, kind: 'EMAIL_VERIFIED' });
+    });
   }
 
   async resendVerification(userId: string): Promise<void> {
@@ -173,7 +176,10 @@ export class AuthService {
   async resetPassword(dto: ResetPasswordDto): Promise<void> {
     const userId = await this.authTokens.consume(dto.token, 'PASSWORD_RESET');
     const passwordHash = await this.password.hash(dto.password);
-    await this.prisma.user.update({ where: { id: userId }, data: { passwordHash } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { passwordHash } });
+      await this.outbox.record(tx, 'user.security_event', { userId, kind: 'PASSWORD_RESET' });
+    });
     await this.sessions.revokeAllForUser(userId, 'PASSWORD_RESET');
     await this.audit.record({ actorUserId: userId, action: 'PASSWORD_RESET', resourceType: 'user', resourceId: userId });
   }
@@ -184,7 +190,10 @@ export class AuthService {
     if (!ok) throw new AppError('INVALID_CREDENTIALS', 'Current password is incorrect.');
 
     const passwordHash = await this.password.hash(dto.newPassword);
-    await this.prisma.user.update({ where: { id: userId }, data: { passwordHash } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { passwordHash } });
+      await this.outbox.record(tx, 'user.security_event', { userId, kind: 'PASSWORD_CHANGED' });
+    });
     await this.sessions.revokeAllForUser(userId, 'PASSWORD_RESET', currentSessionId);
     await this.audit.record({ actorUserId: userId, action: 'PASSWORD_CHANGED', resourceType: 'user', resourceId: userId });
   }

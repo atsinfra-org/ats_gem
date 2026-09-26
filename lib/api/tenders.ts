@@ -1,94 +1,25 @@
-import { tenders, getTenderById as findTenderById, getSimilarTenders } from "@/lib/mock/tenders";
-import type { Tender } from "@/lib/types";
-
-const delay = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
-
-export interface TenderSearchParams {
-  keyword?: string;
-  state?: string;
-  category?: string;
-  industry?: string;
-  tenderType?: string;
-  source?: string;
-  status?: string;
-  minValue?: number;
-  maxValue?: number;
-  sort?: string;
-  page?: number;
-  pageSize?: number;
-}
+import { apiRequest, apiRequestWithMeta } from "./client";
+import type { Pagination, TenderDetail, TenderSummary } from "./types";
 
 export interface TenderSearchResult {
-  items: Tender[];
-  total: number;
-  page: number;
-  pageSize: number;
+  items: TenderSummary[];
+  pagination: Pagination;
+  /** The sort the server actually applied (relevance falls back to newest when there is no keyword). */
+  sort?: string;
+  ranked?: boolean;
 }
 
-export async function searchTenders(params: TenderSearchParams): Promise<TenderSearchResult> {
-  await delay(200);
-  let results = [...tenders];
-
-  if (params.keyword) {
-    const kw = params.keyword.toLowerCase();
-    results = results.filter(
-      (t) =>
-        t.title.toLowerCase().includes(kw) ||
-        t.department.toLowerCase().includes(kw) ||
-        t.category.toLowerCase().includes(kw)
-    );
-  }
-  if (params.state) results = results.filter((t) => t.state === params.state);
-  if (params.category) results = results.filter((t) => t.category === params.category);
-  if (params.industry) results = results.filter((t) => t.industry === params.industry);
-  if (params.tenderType) results = results.filter((t) => t.tenderType === params.tenderType);
-  if (params.source) results = results.filter((t) => t.source === params.source);
-  if (params.status) results = results.filter((t) => t.status === params.status);
-  if (params.minValue) results = results.filter((t) => t.estimatedValue >= params.minValue!);
-  if (params.maxValue) results = results.filter((t) => t.estimatedValue <= params.maxValue!);
-
-  switch (params.sort) {
-    case "closing_soon":
-      results.sort((a, b) => new Date(a.submissionDeadline).getTime() - new Date(b.submissionDeadline).getTime());
-      break;
-    case "value_high":
-      results.sort((a, b) => b.estimatedValue - a.estimatedValue);
-      break;
-    case "value_low":
-      results.sort((a, b) => a.estimatedValue - b.estimatedValue);
-      break;
-    case "latest":
-    default:
-      results.sort((a, b) => new Date(b.publishedDate).getTime() - new Date(a.publishedDate).getTime());
-  }
-
-  const page = params.page ?? 1;
-  const pageSize = params.pageSize ?? 10;
-  const start = (page - 1) * pageSize;
-  const items = results.slice(start, start + pageSize);
-
-  return { items, total: results.length, page, pageSize };
+/**
+ * `params` is built by `toApiParams` (lib/search/search-state.ts) from the URL-backed search state; only
+ * filters the backend really supports exist there (docs/API-CONTRACT.md §5).
+ */
+export async function searchTenders(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<TenderSearchResult> {
+  // Not `anonymous: true`: a signed-in caller's token is attached when present so `isSaved` reflects
+  // their real watchlist and the search lands in their history; the endpoint works without a token too.
+  const { data, meta } = await apiRequestWithMeta<TenderSummary[]>("/search/tenders", { query: params, signal });
+  return { items: data, pagination: meta.pagination as Pagination, sort: meta.sort as string | undefined, ranked: meta.ranked as boolean | undefined };
 }
 
-export async function getTender(id: string): Promise<Tender | undefined> {
-  await delay(150);
-  return findTenderById(id);
-}
-
-export async function getSimilar(tender: Tender): Promise<Tender[]> {
-  await delay(150);
-  return getSimilarTenders(tender);
-}
-
-export async function getRecommendedTenders(limit = 4): Promise<Tender[]> {
-  await delay(150);
-  return tenders.filter((t) => t.status === "open").slice(0, limit);
-}
-
-export async function getClosingSoonTenders(limit = 4): Promise<Tender[]> {
-  await delay(150);
-  return [...tenders]
-    .filter((t) => t.status !== "closed")
-    .sort((a, b) => new Date(a.submissionDeadline).getTime() - new Date(b.submissionDeadline).getTime())
-    .slice(0, limit);
+export async function getTender(id: string): Promise<TenderDetail> {
+  return apiRequest<TenderDetail>(`/tenders/${id}`);
 }

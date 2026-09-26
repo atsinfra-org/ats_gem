@@ -20,7 +20,7 @@ export function TerminalSearch({
 
   function go(term: string) {
     const keyword = term.trim();
-    router.push(keyword ? `/tenders?keyword=${encodeURIComponent(keyword)}` : "/tenders");
+    router.push(keyword ? `/tenders?q=${encodeURIComponent(keyword)}` : "/tenders");
   }
 
   return (

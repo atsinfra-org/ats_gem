@@ -1,68 +1,132 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
-import { IsEnum, IsISO8601, IsInt, IsOptional, IsString, IsUUID, Length, Matches, Max, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { ArrayMaxSize, IsArray, IsEnum, IsISO8601, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Matches, Max, Min } from 'class-validator';
 import { TenderStatus } from '../../generated/prisma/enums';
 
+const csv = () =>
+  Transform(({ value }: { value: unknown }) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const parts = Array.isArray(value) ? value : (value as string).split(',');
+    return parts.map((p) => String(p).trim()).filter(Boolean);
+  });
+
+const DECIMAL = /^\d{1,16}(\.\d{1,2})?$/;
+
+export const SEARCH_SORTS = ['relevance', 'newest', 'closingSoonest', 'closingLatest', 'valueHigh', 'valueLow'] as const;
+export type SearchSort = (typeof SEARCH_SORTS)[number];
+
 /**
- * Filter/pagination foundation for `GET /search/tenders` (docs/API-CONTRACT.md §5). This is a
- * plain indexed-column filter, not the relevance-ranked search engine — that is Phase 4/5, built
- * behind the same `SearchProvider` interface without changing this DTO's shape.
+ * The single query model for `GET /search/tenders` (docs/API-CONTRACT.md Sec 5). List-valued filters
+ * accept comma-separated values or repeated params (`state=MH,UP` or `state=MH&state=UP`); a single value
+ * behaves exactly as before, so Phase 2-6 clients keep working. Only fields backed by real data exist here.
  */
 export class ListTendersQueryDto {
-  @ApiPropertyOptional({ description: 'Matched against the title (case-insensitive substring).' })
+  @ApiPropertyOptional({ description: 'Free text: matched (normalized, prefix-aware, typo-tolerant) across title, reference, procuring entity, category, location and tender type.' })
   @IsOptional()
   @IsString()
-  @Length(1, 200)
+  @Length(1, 400)
   q?: string;
 
-  @ApiPropertyOptional({ example: 'MH' })
+  @ApiPropertyOptional({ description: 'Tender reference number (exact or prefix, punctuation-insensitive).' })
   @IsOptional()
-  @Matches(/^[A-Z]{2}$/)
-  state?: string;
+  @IsString()
+  @Length(1, 100)
+  reference?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ example: 'MH,UP', description: 'Two-letter state codes.' })
   @IsOptional()
-  @IsUUID()
-  category?: string;
+  @csv()
+  @IsArray()
+  @ArrayMaxSize(40)
+  @Matches(/^[A-Z]{2}$/, { each: true })
+  state?: string[];
 
-  @ApiPropertyOptional({ enum: TenderStatus })
+  @ApiPropertyOptional({ description: 'District ids (only populated where the source provides a district).' })
   @IsOptional()
-  @IsEnum(TenderStatus)
-  status?: TenderStatus;
+  @csv()
+  @IsArray()
+  @ArrayMaxSize(40)
+  @IsUUID('all', { each: true })
+  district?: string[];
 
-  @ApiPropertyOptional() @IsOptional() @IsISO8601() publishedFrom?: string;
+  @ApiPropertyOptional({ description: 'Exact city name, case-insensitive.' })
+  @IsOptional()
+  @csv()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @Length(1, 100, { each: true })
+  city?: string[];
+
+  @ApiPropertyOptional({ description: 'Category ids; a parent category also matches its children.' })
+  @IsOptional()
+  @csv()
+  @IsArray()
+  @ArrayMaxSize(40)
+  @IsUUID('all', { each: true })
+  category?: string[];
+
+  @ApiPropertyOptional({ description: 'Canonical procuring entity ids.' })
+  @IsOptional()
+  @csv()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID('all', { each: true })
+  procuringEntity?: string[];
+
+  @ApiPropertyOptional({ description: 'Tender type keys (see /meta/tender-types).' })
+  @IsOptional()
+  @csv()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @Matches(/^[A-Za-z0-9_-]{1,50}$/, { each: true })
+  tenderType?: string[];
+
+  @ApiPropertyOptional({ enum: TenderStatus, isArray: true })
+  @IsOptional()
+  @csv()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsEnum(TenderStatus, { each: true })
+  status?: TenderStatus[];
+
+  @ApiPropertyOptional({ description: 'Tender source ids (see /meta/sources).' })
+  @IsOptional()
+  @csv()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID('all', { each: true })
+  source?: string[];
+
+  @ApiPropertyOptional({ description: 'Exact decimal, e.g. "100000" or "100000.50".' }) @IsOptional() @Matches(DECIMAL) minValue?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(DECIMAL) maxValue?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(DECIMAL) minEmd?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(DECIMAL) maxEmd?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(DECIMAL) minFee?: string;
+  @ApiPropertyOptional() @IsOptional() @Matches(DECIMAL) maxFee?: string;
+
+  @ApiPropertyOptional({ description: 'Date-only (IST calendar day, inclusive) or ISO-8601 instant.' }) @IsOptional() @IsISO8601() publishedFrom?: string;
   @ApiPropertyOptional() @IsOptional() @IsISO8601() publishedTo?: string;
   @ApiPropertyOptional() @IsOptional() @IsISO8601() closingFrom?: string;
   @ApiPropertyOptional() @IsOptional() @IsISO8601() closingTo?: string;
+  @ApiPropertyOptional() @IsOptional() @IsISO8601() openingFrom?: string;
+  @ApiPropertyOptional() @IsOptional() @IsISO8601() openingTo?: string;
 
-  @ApiPropertyOptional({ description: 'Canonical procuring entity (Phase 3), not the free-text department.' })
+  @ApiPropertyOptional({ enum: SEARCH_SORTS, description: 'relevance = ranked when q/reference is given, otherwise newest first.' })
   @IsOptional()
-  @IsUUID()
-  procuringEntity?: string;
+  @IsIn(SEARCH_SORTS)
+  sort?: SearchSort;
 
-  @ApiPropertyOptional()
+  /** Legacy (Phase 3) sort params; `sort` wins when both are present. */
+  @ApiPropertyOptional({ enum: ['publishedAt', 'closingAt', 'estimatedValue'] })
   @IsOptional()
-  @IsUUID()
-  district?: string;
-
-  @ApiPropertyOptional({ description: 'Minimum estimated value (exact decimal string, e.g. "100000.00").' })
-  @IsOptional()
-  @Matches(/^\d{1,16}\.\d{2}$/)
-  minValue?: string;
-
-  @ApiPropertyOptional({ description: 'Maximum estimated value (exact decimal string).' })
-  @IsOptional()
-  @Matches(/^\d{1,16}\.\d{2}$/)
-  maxValue?: string;
-
-  @ApiPropertyOptional({ enum: ['publishedAt', 'closingAt', 'estimatedValue'], default: 'publishedAt' })
-  @IsOptional()
-  @IsEnum(['publishedAt', 'closingAt', 'estimatedValue'])
+  @IsIn(['publishedAt', 'closingAt', 'estimatedValue'])
   sortBy?: 'publishedAt' | 'closingAt' | 'estimatedValue';
 
-  @ApiPropertyOptional({ enum: ['asc', 'desc'], default: 'desc' })
+  @ApiPropertyOptional({ enum: ['asc', 'desc'] })
   @IsOptional()
-  @IsEnum(['asc', 'desc'])
+  @IsIn(['asc', 'desc'])
   sortOrder?: 'asc' | 'desc';
 
   @ApiPropertyOptional({ minimum: 1, default: 1 })
@@ -70,6 +134,7 @@ export class ListTendersQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(10_000)
   page?: number = 1;
 
   @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 20 })

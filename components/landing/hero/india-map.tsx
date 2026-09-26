@@ -5,24 +5,35 @@ import { INDIA_VIEWBOX, indiaStates, type StateGeometry } from "@/lib/geo/india"
 import type { StateSnapshot } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const levels = [
-  { min: 0, mix: 13 },
-  { min: 500, mix: 26 },
-  { min: 2000, mix: 44 },
-  { min: 4000, mix: 66 },
-  { min: 7000, mix: 90 },
-];
+const mixes = [13, 26, 44, 66, 90];
+const FULL_SCALE = { max: 10000, thresholds: [0, 500, 2000, 4000, 7000] };
 
-function levelOf(live: number) {
+function nice(n: number) {
+  if (n <= 10) return Math.max(1, Math.round(n));
+  const p = 10 ** Math.floor(Math.log10(n));
+  return Math.round(n / p) * p;
+}
+
+/** The fixed national scale once the busiest state has 10k+ live tenders; below that, the same proportions of the busiest state so the map keeps its contrast. */
+function thresholdsFor(maxLive: number) {
+  if (maxLive >= FULL_SCALE.max) return FULL_SCALE.thresholds;
+  return FULL_SCALE.thresholds.map((t) => (t === 0 ? 0 : nice((t / FULL_SCALE.max) * maxLive)));
+}
+
+function levelOf(live: number, thresholds: number[]) {
   let level = 0;
-  levels.forEach((l, i) => {
-    if (live >= l.min) level = i;
+  thresholds.forEach((min, i) => {
+    if (live >= min) level = i;
   });
   return level;
 }
 
 function fillFor(level: number) {
-  return `color-mix(in srgb, var(--color-primary) ${levels[level].mix}%, transparent)`;
+  return `color-mix(in srgb, var(--color-primary) ${mixes[level]}%, transparent)`;
+}
+
+function compact(n: number) {
+  return n >= 1000 ? `${n / 1000}k` : String(n);
 }
 
 interface MarkerSpec {
@@ -99,6 +110,8 @@ export function IndiaMap({
   const lastPointer = React.useRef("mouse");
   const [tabStop, setTabStop] = React.useState("MH");
 
+  const thresholds = React.useMemo(() => thresholdsFor(Math.max(0, ...states.map((s) => s.live))), [states]);
+
   const shapes = React.useMemo(() => {
     const byCode = new Map(states.map((s) => [s.code, s]));
     return indiaStates
@@ -107,10 +120,10 @@ export function IndiaMap({
         if (!stat) return [];
         const marker = MARKERS[g.code];
         const [x, y] = marker?.at ?? [g.labelX, g.labelY];
-        return [{ ...g, stat, x, y, marker, level: levelOf(stat.live) }];
+        return [{ ...g, stat, x, y, marker, level: levelOf(stat.live, thresholds) }];
       })
       .sort((a, b) => Number(Boolean(a.marker)) - Number(Boolean(b.marker)));
-  }, [states]);
+  }, [states, thresholds]);
 
   const active = shapes.find((s) => s.code === selected);
 
@@ -262,13 +275,13 @@ export function IndiaMap({
 
       <div className="mt-4 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-white/55">
         <span>Live tenders</span>
-        <span className="ml-1">&lt;500</span>
+        <span className="ml-1">&lt;{compact(thresholds[1])}</span>
         <span className="flex gap-1">
-          {levels.map((_, i) => (
+          {mixes.map((_, i) => (
             <span key={i} className="h-2.5 w-4 rounded-[2px]" style={{ backgroundColor: fillFor(i) }} />
           ))}
         </span>
-        <span>7k+</span>
+        <span>{compact(thresholds[4])}+</span>
       </div>
     </div>
   );

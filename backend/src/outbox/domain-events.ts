@@ -14,6 +14,10 @@ export const DOMAIN_EVENT_SCHEMAS = {
   'tender.closed': z.object({ tenderId: uuid, closedAt: z.iso.datetime() }),
   /** A new source started tracking an existing canonical tender (Phase 3 deduplication - exact or auto-linked match). */
   'tender.source_linked': z.object({ tenderId: uuid, sourceId: uuid, outcome: z.enum(['exact', 'auto-link']) }),
+  /** An admin/staff-recorded corrigendum notice (Phase 4 `tender_corrigenda` row). */
+  'tender.corrigendum_created': z.object({ tenderId: uuid, corrigendumId: uuid }),
+  /** Password/e-mail account events; consumed by the notification system (Phase 8). Carries no secrets. */
+  'user.security_event': z.object({ userId: uuid, kind: z.enum(['PASSWORD_CHANGED', 'PASSWORD_RESET', 'EMAIL_VERIFIED']) }),
   'document.created': z.object({ documentId: uuid, tenderId: uuid }),
   'user.created': z.object({ userId: uuid }),
   'organization.created': z.object({ organizationId: uuid, ownerUserId: uuid }),
@@ -42,6 +46,8 @@ export const DOMAIN_EVENT_AGGREGATES: {
   'tender.updated': { type: 'tender', id: (p) => p.tenderId },
   'tender.closed': { type: 'tender', id: (p) => p.tenderId },
   'tender.source_linked': { type: 'tender', id: (p) => p.tenderId },
+  'tender.corrigendum_created': { type: 'tender', id: (p) => p.tenderId },
+  'user.security_event': { type: 'user', id: (p) => p.userId },
   'document.created': { type: 'document', id: (p) => p.documentId },
   'user.created': { type: 'user', id: (p) => p.userId },
   'organization.created': { type: 'organization', id: (p) => p.organizationId },

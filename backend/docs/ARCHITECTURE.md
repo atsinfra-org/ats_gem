@@ -247,11 +247,7 @@ Formats: PDF (full pipeline); XLS/XLSX BOQs (cell text extraction); ZIP (entries
 `MediaStorageService` with `upload(stream, key, meta)`, `download(key)`, `delete(key)`, `exists(key)`, `getSignedUrl(key, {expiresIn, disposition})`, `getMetadata(key)`. Drivers: `s3` (AWS S3, Cloudflare R2 and MinIO are all S3-API compatible and differ only in endpoint/region config) and `local` (dev only, signed URLs served by an HMAC-verified API route). Private bucket; downloads only via short-lived signed URLs (default 5 min) issued after authorization and entitlement checks (download counter).
 
 ## 9. Search
-- Index `tenders_v{n}` behind alias `tenders`; zero-downtime reindex by building `v{n+1}` and swapping the alias.
-- Fields: title/description/procuring entity (analyzed, English + Indic-friendly standard analyzer, `search_as_you_type` subfield), `reference_number` (keyword + normalized), category/state/district/city/source/type/status (keyword), values (scaled_float, paise precision), dates, `documents_text` (analyzed, excluded from `_source`).
-- Relevance: `multi_match` with boosts (title^4, reference^6, entity^2, category^2, description^1, documents_text^0.5) + exact-phrase support via quotes + recency and closing-date decay functions for the "relevance" sort.
-- Facets: terms aggregations for state, category, source, type, status; range aggregations for value and EMD.
-- Pagination: page-based for the UI (capped at 10 000 hits), `search_after` cursor for deep pagination and exports.
+**Superseded by Sec 20 (Phase 7).** The original design sketched here was an OpenSearch index with an alias-swap reindex, `multi_match` boosts and facet aggregations. It was evaluated against the Phase 7 audit evidence and not adopted: search is PostgreSQL-native (weighted `tsvector` + `pg_trgm`), and the reindex idea survives as the resumable `search:reindex` / `search:verify` commands. Revisit OpenSearch only on the measured thresholds in Sec 20.1 / 20.12 (or when document-text search arrives).
 
 ## 10. Notifications
 Domain events (`TenderCreated`, `TenderUpdated`, `CorrigendumPublished`, `TenderCancelled`, `DocumentAdded`, `ClosingSoon` from a daily sweep) → matching engine → `notifications` + per-channel `notification_deliveries`. Channels: in-app (persisted, pushed live over SSE `GET /notifications/stream`), email (queued, provider abstraction, digest batching for daily/weekly alerts), push (interface reserved). Never sent inside HTTP handlers.
@@ -797,3 +793,274 @@ Every new list endpoint (`documents`, `requirements`, `timeline`, `corrigenda`) 
 `pageSize` (capped at 100, or 200 for timeline) and returns the same `meta.pagination` shape Phase 2
 established - no unbounded relation is ever returned outside the capped detail-page preview (Sec
 19.9).
+
+## 20. Search & discovery as built (Phase 7)
+
+Phase 7 evolves the Phase 3 filter endpoint into the search system. `GET /search/tenders` keeps its path, envelope and every Phase 2-6 parameter (single values still work), and there is exactly one search implementation (`SearchService`).
+
+### 20.1 Architecture decision: PostgreSQL-native, OpenSearch not required
+
+Evidence (audit before design): `pg_trgm` was already installed; OpenSearch existed only as an unimplemented provider stub and an unused compose profile; the corpus is a single table (target scale here: hundreds of thousands of rows); every field to rank on lives in Postgres; and a second store would need a sync/reconciliation path and its own failure modes.
+
+Decision: a weighted `tsvector` (`simple` config: no stemming or stop-words, so identifiers, Hindi/Indic tokens and names are never mangled) maintained by a trigger, plus `pg_trgm` GIN indexes for typo tolerance and reference matching. `SEARCH_PROVIDER=opensearch` still fails at boot ("not implemented") rather than silently degrading. Revisit OpenSearch when measured p95 for the Sec 20.12 scenarios exceeds their thresholds at the real corpus size, or when document-text (OCR) search arrives - not before.
+
+Trade-offs accepted: no language stemming, no learned ranking, ranking is bounded (Sec 20.4), counts are capped (Sec 20.6). In exchange: transactional consistency (a tender is searchable in the same transaction that changes it), zero new infrastructure, and fully explainable ranking.
+
+### 20.2 Index model and lifecycle
+
+- `tenders.search_vector tsvector`, built by `tender_search_vector_build(tenders)` with weights **A** title + reference, **B** department + procuring-entity name, **C** category / sub-category and city / location / state name, **D** tender-type name. A `BEFORE INSERT OR UPDATE OF <indexed columns>` trigger keeps it current, so ingestion, dedup, admin corrections and entity re-linking need no extra step.
+- The trigger cannot see changes in *other* tables (renaming a category or an entity). The existing `search.index-tender` job therefore calls `SearchIndexService.refreshTender(id)`, which recomputes the row (idempotent, retried by the queue).
+- Deleted (`deleted_at`) and duplicate (`duplicate_of_id`) tenders are excluded at query time, so delete, archive and dedup never leave stale hits and nothing has to be removed from the index.
+- Rebuild: `node dist/main.cli.js search:reindex [--batch N] [--resume]` recomputes every row in id-ordered batches (default 2 000, resumable from the last cursor of a FAILED run), records a `search_index_runs` row, and is safe to re-run. `search:verify` compares stored vectors with a fresh computation and reports missing / stale counts. `GET /search/health` returns counts and the last run only (no connection details).
+- Migration `20260926090000_phase7_search` adds the column, function, trigger, backfill and indexes in one step. Large tables should run `search:reindex` after deploy rather than rely on the in-migration backfill.
+
+### 20.3 Query normalization and safe construction
+
+`normalizeQuery`: NFKC, control characters removed, whitespace collapsed, lower-cased for matching, tokens = Unicode letter/digit runs (so `road-construction`, `PWD/2026/0012` and `road,construction!` tokenize alike). Stop-words are **not** dropped (that would silently change intent). Max 200 characters after normalization (longer is a 400), 12 tokens, 40 characters per token. The `tsquery` string is assembled only from sanitized tokens (`token:*` joined by `&`) and passed as a bound parameter; user-typed `& | ! <-> ( ) :` are separators, never syntax. Every value reaches SQL as a bound parameter (`Prisma.sql`); the only interpolated SQL is a fixed constant map (sort order, tier weights). `LIKE` patterns are built from the alphanumeric reference key only.
+
+### 20.4 Ranking (deterministic, explainable)
+
+A match is classified into the first tier that applies. The tier is returned as `matchReason` and is the score's dominant term.
+
+| Tier (`matchReason`) | Weight | Rule |
+|---|---|---|
+| `REFERENCE_EXACT` | 1000 | normalized reference equals the query key (>= 3 chars) |
+| `REFERENCE_PREFIX` | 600 | reference starts with the key |
+| `REFERENCE_PARTIAL` | 350 | reference contains the key (>= 4 chars) |
+| `TITLE_PHRASE` | 300 | the whole query appears in the title as typed |
+| `TITLE_TERMS` | 200 | every query term is a prefix of a title word |
+| `ENTITY` | 120 | terms match the procuring entity / department |
+| `OTHER_FIELDS` | 60 | terms match category, location or tender type |
+| `FUZZY` | 10 | typo-tolerant only (plus `20 x word_similarity` inside the tier) |
+
+Within a tier, results order by `published_at DESC, id DESC` (recency, then a unique tie-break), so the same query and data always give the same order. `ts_rank_cd` was evaluated and **removed**: with prefix queries it cost about 40 us per row (roughly 6x the rest of the query at 500 000 rows) for a marginal in-tier ordering gain. Without a keyword or reference, `sort=relevance` is reported as `newest` (`meta.sort`, `meta.ranked=false`).
+
+Two bounded-cost rules, both measured (Sec 20.12):
+
+1. **Fuzzy fallback.** Typo-tolerant matching (`<%` word similarity >= 0.55 on the title) is added only when strict matching returns fewer than 3 rows, so common queries never pay for the trigram scan.
+2. **Rank window.** Relevance scores at most the 20 000 newest matches (2 000 in fuzzy mode) plus exact reference matches; a query matching more than that ranks within the window. Non-relevance sorts do not score at all, and `matchReason` is computed only for the rows of the returned page.
+
+### 20.5 Filters, sorting and date semantics
+
+Filters (list-valued ones take `a,b` or repeated params, max 20-40 values): `state`, `district`, `city` (case-insensitive exact), `category` (a parent also matches its children, expanded server-side), `procuringEntity`, `tenderType`, `status`, `source` (via `tender_source_records`), value / EMD / fee ranges, published / closing / opening date ranges, and `reference`. Only fields backed by real data exist; there is no fake facet. The UI offers every filter, including `district` and `city` (Sec 20.13). District data is only present where a source supplies it, so the district control explains an empty list rather than hiding.
+
+Money is compared as `::numeric` in the database against exact decimal strings (`^\d{1,16}(\.\d{1,2})?$`), never as JS floats, inclusive at both ends. **Dates are IST calendar days**: a date-only `from` means 00:00 IST inclusive, a date-only `to` means the *next* day 00:00 IST exclusive (so `to=2026-10-31` includes all of 31 October IST); a full ISO-8601 instant is used as given, inclusive. Inverted ranges are a 400 (`VALIDATION_FAILED`). Sorts: `relevance | newest | closingSoonest | closingLatest | valueHigh | valueLow` (legacy `sortBy` / `sortOrder` still map onto them). Every sort ends in `published_at DESC, id DESC` so ties are stable.
+
+### 20.6 Pagination
+
+Offset pagination with a documented bound: results are counted up to **10 000** (`meta.pagination.totalCapped=true` when more match, `total` is then the cap) and offsets >= 10 000 return `400` with detail code `PAGE_TOO_DEEP`, so no request can force an unbounded scan. Ties are broken by id, so pages are stable and duplicate-free for unchanged data (verified in e2e). Cursor pagination is deliberately deferred (it is needed only for exports). Anonymous callers still get page 1 with at most 20 rows (unchanged Phase 6 behaviour).
+
+### 20.7 Suggestions
+
+`GET /search/suggestions?q=` returns, from real data only: the caller's own recent searches, reference-number prefix matches, procuring entities, categories, states and **popular** terms. Popular terms come from `search_history` aggregated over the last 30 days and are shown only when at least 3 *distinct users* searched them (k-anonymity), so one user's history is never exposed to another. Input under 2 characters returns only the caller's recents. `GET /search/entities?q=` is the server-side organization picker (min 2 characters, 10 results).
+
+### 20.8 Search history and privacy decision
+
+Only authenticated users' searches are stored (`search_history`); **anonymous searches are never stored**. One row per (user, hash of normalized query + filters) with a counter, so repeats do not create rows; capped at 200 per user (oldest dropped). Stored: the normalized query and the filter subset. Not stored: IP, user-agent, tokens, result contents. Users list, delete one and clear all of their own history (`GET` / `DELETE /search/history`, scoped by user id; another user's id returns 404). History is written best-effort and never blocks or fails a search; only page 1 of keyword / reference searches is recorded, so paging does not inflate counts.
+
+### 20.9 Analytics foundation (events only)
+
+`POST /search/events` (public, rate limited, 202) appends to `search_events`: `SEARCH_SUBMITTED, FILTER_APPLIED, FILTER_REMOVED, SORT_CHANGED, RESULT_OPENED, RESULT_SAVED, SEARCH_SAVED, SUGGESTION_SELECTED`. The DTO is a closed shape (type, normalized query, short name / value, tender id, position, result count): no free-form payload, so events cannot become an exfiltration or PII sink, and unknown properties are rejected. There is no FK to users (events outlive accounts) and no IP. Retention is enforced (Sec 20.13): events older than `SEARCH_EVENT_RETENTION_DAYS` (default 180) are purged daily. There is no dashboard. The UI emits every type except `RESULT_SAVED` (the save button lives inside `TenderCard` and is not wired to events yet).
+
+### 20.10 Failure handling and security
+
+Statement timeout 8 s per search transaction. Any database failure becomes `503 DEPENDENCY_UNAVAILABLE` with a generic message (no SQL, column or host text; verified by renaming the column in an e2e test), while browsing without a keyword keeps working. Search endpoints use the `search` rate-limit policy (`RATE_LIMIT_SEARCH_MAX` 240 / `RATE_LIMIT_SEARCH_WINDOW_SECONDS` 60, per IP and route). The UI degrades independently: a suggestion failure never blocks submitting, a history failure shows a retryable error, a search failure shows the shared retryable error view.
+
+### 20.11 Frontend behaviour and the login-gated search decision
+
+The Phase 6 decision stands: the tender search **page** sits inside the authenticated app shell, so anonymous visitors cannot reach it in the UI (they are redirected to the landing page). The API endpoint itself remains public (page 1, at most 20 rows), which is why anonymous behaviour is documented and tested but not exposed in the UI. Impact: there is no anonymous search history or personalization to consider, and a future public search page would need its own product decision on abuse limits and SEO.
+
+Search state is URL-backed (`q`, list filters, ranges, dates, `sort`, `page`): back / forward, reload and shared links restore it. Invalid values are dropped, reported in an on-page notice and removed from the URL, and the pre-Phase-7 `?keyword=` link format is still accepted. The search box is an ARIA 1.2 combobox; results carry the API's `matchReason` as a badge; active filters are removable chips; organizations are searched server-side; on phones the filters open in a bottom sheet. Saved searches store the same criteria model and still read legacy single-string criteria.
+
+### 20.12 Measured performance (synthetic dataset)
+
+Method: `backend/scripts/search-benchmark.cjs` against a scratch database (`ats_gem_bench`, dropped afterwards; the script refuses any database whose name does not contain "bench"). Dataset: 500 000 clearly synthetic tenders (`BENCH/...` references, a 30-word vocabulary, 3 000 entities, 20 categories, 5 sources, 10 states) in Postgres 17 (Docker, developer machine). 60 timed iterations after 3 warm-ups per scenario, page size 20, timings are service-level (excluding HTTP). The vocabulary is small and repetitive, so common terms match a large share of the table: this is a **worst case for broad queries**, not typical data. Loading the data through the trigger took 196 s (about 2 550 rows/s); `search:reindex` re-indexed all 500 000 rows in 100.5 s (4 973 rows/s, 100 batches).
+
+Final results (ms):
+
+| Scenario | matches | p50 | p95 | p99 |
+|---|---|---|---|---|
+| browse, no query (newest) | 10 000+ | 6.4 | 9.7 | 12.2 |
+| keyword "road construction" | 4 166 | 69.4 | 87.0 | 120.5 |
+| keyword prefix "constr" | 10 000+ | 164.7 | 212.7 | 311.6 |
+| keyword, rare multi-term (no strict result, fuzzy fallback) | 0 | 115.1 | 144.4 | 159.1 |
+| typo "constructon" (fuzzy) | 10 000+ | 359.7 | 398.0 | 408.5 |
+| reference exact, no match (fuzzy fallback) | 0 | 278.3 | 311.1 | 336.3 |
+| reference partial | 0 | 3.5 | 4.6 | 4.7 |
+| filter state | 10 000+ | 28.3 | 34.3 | 38.7 |
+| state + status + value range | 10 000+ | 124.5 | 168.8 | 194.5 |
+| category (parent expansion) | 10 000+ | 52.7 | 61.0 | 63.9 |
+| procuring entity | 166 | 4.5 | 7.5 | 8.4 |
+| source | 10 000+ | 32.8 | 35.1 | 38.6 |
+| closing date range (IST) | 359 | 5.5 | 6.9 | 7.2 |
+| keyword + state + status, sort closingSoonest | 10 000+ | 222.2 | 434.6 | 511.9 |
+| keyword + sort valueHigh | 10 000+ | 164.9 | 189.0 | 201.0 |
+| deep page (page 200) | 10 000+ | 193.9 | 260.3 | 336.3 |
+| no match | 0 | 4.4 | 5.4 | 5.9 |
+
+Throughput (query "road construction"): 10 concurrent clients 44.6 req/s (p50 210 ms, p95 301 ms, p99 356 ms); 25 concurrent 44.7 req/s (p50 550 ms, p95 667 ms, p99 730 ms), no errors. The mix saturates the database CPU at about 45 req/s on the test machine; the default per-IP API limit (240/min) is far below that.
+
+Before / after: the first implementation measured 690 ms p50 for "road construction", 1 928 ms for "constr", 2 301 ms for page 200, and 11 req/s with 8 s statement timeouts (503s) at 10-25 concurrent clients. Changes that fixed it, each measured: the strict-first fuzzy fallback (removed a 16 000-row trigram bitmap from common queries), weight-restricted `tsquery` on the stored vector instead of re-parsing `to_tsvector(title)` per row, removing `ts_rank_cd`, the rank window, and computing `matchReason` only for the returned page. The statement-timeout 503 path was exercised for real by the pre-fix run.
+
+Thresholds (per-scenario p95 at 500 000 rows on this hardware; rationale: interactive search should feel immediate, and slower-than-a-second queries must at least be bounded): browse / filter-only <= 250 ms, keyword <= 500 ms, fuzzy <= 750 ms, any scenario <= 1 s. All measured p95 values are within those thresholds (worst: 434.6 ms for keyword + filters + closing sort). The real corpus is expected to be smaller and less repetitive; re-run the script against production-sized data before relying on these numbers. Known cost centres: keyword + broad filter + non-relevance sort, and the fuzzy fallback on zero-result queries (both under 0.6 s here).
+
+Index evidence (`EXPLAIN ANALYZE` on the same data): the strict keyword count uses a `Bitmap Index Scan on tenders_search_vector_gin_idx` (4 166 rows in 27 ms); reference `LIKE` and title similarity use `tenders_reference_norm_trgm_idx` and `tenders_title_trgm_idx`; browsing uses the partial `tenders_published_id_idx`.
+
+### 20.13 Phase 7 gap closure (final sign-off pass)
+
+**District and city filters (UI).** Both use the existing `FilterPanel` / URL-state architecture: list-valued, removable chips, "Clear all", URL + reload + back/forward persistence, saved-search criteria and history, desktop panel and mobile bottom sheet. Data availability was audited first: in the dev database `districts` is empty and no tender carries a `district_id` (the mock source supplies only a city), while `city` is populated. Therefore: the **district** control lists real rows from `GET /meta/districts` (narrowed to the selected states) and shows explicit loading / error / "no district data is available from the current sources" states instead of pretending; the **city** control is a server-side lookup, `GET /search/cities?q=&state=` (min 2 characters, 20 results, distinct case-insensitive names of live tenders with counts, optionally scoped to one state), so no city list is hardcoded or duplicated on the client. City values are matched exactly, case-insensitively (`lower(city)` index); a city name containing a comma cannot be expressed in the comma-separated form (documented limitation; none exist in current data). Up to 20 cities and 40 districts per query.
+
+**Organization label for shared URLs.** `GET /search/entities?ids=<uuid,uuid>` resolves display names for at most 20 valid ids (junk ignored). The search view calls it once for ids that have no label yet, so a shared link or saved search now shows "Organization: <name>" instead of a generic label. No preload architecture was added.
+
+**Search-event retention.** `maintenance.search-events-purge` follows the `maintenance.outbox-cleanup` convention: an empty-payload job on the `maintenance` queue, handled by `SearchEventsPurgeHandler` in the worker, scheduled by a seeded `job_schedules` row (`search-events-purge`, daily 04:15 IST, editable/disable-able like every platform schedule). `SearchEventsPurgeService.purge()` deletes `search_events` rows with `created_at < now - SEARCH_EVENT_RETENTION_DAYS` (default 180, range 1-3650) in batches of 5 000: each batch is a separate short statement using `FOR UPDATE SKIP LOCKED`, so it never holds a long lock, does not block the inserts search traffic produces, and concurrent or repeated runs are safe (a rerun deletes nothing). It logs a structured `search event purge completed` line (deleted, batches, retentionDays, cutoff, durationMs) or a structured error, and returns the same summary as the job result. Manual run: `node dist/main.cli.js search:purge-events`. Only `search_events` is touched; `search_history` is user-managed and unaffected.
+
+**Retained as-is (evaluated, not expanded).**
+- *20 000-match rank window* - a scalability bound, not a correctness bug: queries with at most 20 000 matches are ranked exactly; broader ones rank the newest 20 000 (plus exact reference matches), which is also what the 10 000-result pagination cap already exposes to users. Measured at 500 000 rows (Sec 20.12). Kept and documented.
+- *Zero-result fuzzy fallback* (about 0.12-0.3 s at 500 000 rows, within the fuzzy threshold of 750 ms) - only runs when strict matching finds fewer than 3 rows; the trigram index is used; no low-risk optimization that preserves relevance behaviour was identified. Unchanged.
+- *Cursor pagination* - not needed; the 10 000 cap is safe and documented (Sec 20.6). Deferred until exports need it.
+- *`nest build` failure* - environmental: `engines` and `.nvmrc` require Node >= 24.11 while the failing shell runs Node 22.13, where the Nest CLI's ESM dependency (`ora`) hits `ERR_REQUIRE_CYCLE_MODULE`. The project's `npm run build` deliberately uses `tsc -p tsconfig.build.json` (README), which is what CI and Docker (Node 24) run. No repository change.
+
+## 21. Notifications & alerts as built (Phase 8)
+
+Phase 8 builds the alert pipeline on the infrastructure that already existed: the transactional outbox (Sec 16.3), the BullMQ queues/workers/scheduler, the `notification.dispatch` and `email.send` job definitions, the `EmailTransport` abstraction with its log driver, the `notifications` table, saved searches (Phase 2/7) and the watchlist. Nothing was duplicated: there is still exactly one event mechanism (the outbox), one queue layer, one scheduler and one search implementation.
+
+### 21.1 Flow
+
+```
+domain change (same DB transaction) -> outbox_events row
+  -> relay -> notification.dispatch job (queue "notifications")
+  -> NotificationEventProcessor: load event, recipients (watchlist + saved-search matcher), plans
+  -> NotificationDeliveryService.deliverMany: preferences -> existing-dedup -> in-app cap -> in-app records (unique per user+event)
+       -> email decision (preference, verified address, digest, caps, quiet hours) -> notification_deliveries row
+  -> notification.email job (queue "email")  -> NotificationEmailHandler -> EmailTransport (provider) -> status
+  scheduled: notification.deadline-sweep (15 min) creates reminders; notification.send-digests (daily 08:00 IST) folds waiting alerts
+```
+
+Generation is always asynchronous: no HTTP request creates or sends a notification (the API only reads and updates the caller's own rows and preferences). A crash between commit and queue add cannot lose an event (outbox), a retried job cannot duplicate one (Sec 21.10), and a lost email queue message is re-queued by the sweep (Sec 21.9).
+
+### 21.2 What existed vs what was added
+
+Existing and reused: `outbox_events` + relay + routes, `OutboxService.record`, job registry/`QueueProducer`/worker host/retry policy per queue, `job_schedules` + scheduler + `SeedService` default schedules, `EmailTransport` + `LogEmailTransport`, `AuditLogService`, `SavedSearch`, `WatchlistItem`, `Notification`, the Phase 6 notification bell/page. Added: migration `20260927090000_phase8_notifications` (Sec 21.13), the notification domain code in `src/notifications/`, two domain events (`tender.corrigendum_created`, `user.security_event`), three jobs (`notification.email`, `notification.deadline-sweep`, `notification.send-digests`), routes from tender events to the already-declared `notification.dispatch` job, saved-search `alertFrequency`, and the frontend upgrades (Sec 21.12).
+
+### 21.3 Event sources (what actually produces notifications)
+
+Only events the current backend really emits are consumed:
+
+| Domain event | Emitted by | Used for |
+|---|---|---|
+| `tender.created` | ingestion (mock crawl / any adapter through `TenderIngestionService`) | saved-search alerts |
+| `tender.updated` (+ `tender_versions` diff) | ingestion change detection | saved-tender updates, cancellation |
+| `tender.closed` | ingestion status transition | saved-tender status change |
+| `tender.corrigendum_created` | `CorrigendaService.create` (staff API, same transaction) | corrigendum alerts |
+| `user.security_event` | `AuthService` (password change/reset, email verification, same transaction) | security/account notifications |
+| time (schedule) | `notification.deadline-sweep` | deadline reminders |
+
+Because production crawlers are deferred (Phase 5), **alerts fire for tenders that enter the system through the ingestion pipeline or, in development/tests, through controlled fixtures that write the same outbox events. This phase does not claim that government-portal changes will generate alerts automatically.** Verified end to end against the Docker stack with tagged fixtures (Sec 21.15).
+
+### 21.4 Notification types
+
+Closed list in `notification-types.ts`; each has a real producer. `type` stays a text column (open set), but every writer validates against the list.
+
+| Type | Category (preference) | Priority | Template | Emailed |
+|---|---|---|---|---|
+| `SAVED_SEARCH_MATCH` | SAVED_SEARCH_ALERTS | NORMAL | saved-search-match | yes |
+| `TENDER_UPDATED` | SAVED_TENDER_UPDATES | NORMAL | tender-update | yes |
+| `TENDER_DEADLINE` | DEADLINE_REMINDERS | HIGH | deadline-reminder | yes |
+| `TENDER_CORRIGENDUM` | CORRIGENDA | HIGH | tender-corrigendum | yes |
+| `TENDER_CANCELLED` | STATUS_CHANGES | HIGH | tender-update | yes |
+| `TENDER_STATUS_CHANGED` (closed) | STATUS_CHANGES | NORMAL | tender-update | yes |
+| `SECURITY` (password changed/reset) | SYSTEM (locked) | CRITICAL | system-security | yes, cannot be disabled |
+| `ACCOUNT` (email verified) | SYSTEM (locked) | NORMAL | system-security | in-app only |
+
+Not implemented because nothing produces them: `NEW_TENDER` (distinct from a saved-search match), `TENDER_CLOSING_SOON` (covered by deadline reminders), generic `SYSTEM` messages, `SAVED_TENDER_DEADLINE` (same as `TENDER_DEADLINE`). Priorities: CRITICAL bypasses quiet hours and email caps and cannot be turned off; HIGH is shown with an "Important" label; the list is ordered by time.
+
+### 21.5 Saved-search alerts: matching architecture
+
+Requirement: a saved search must match exactly what the same search lists in Phase 7, and matching must not run every search for every tender.
+
+- **Same semantics, one implementation.** `SearchService.strictMatchWhere(criteria)` builds the very WHERE that `search()` applies (shared `prepare()` normalization/validation, `buildWhere`, category expansion, IST date bounds, exact-decimal money) - it is not a second matcher. The one deliberate difference: the typo-tolerant fallback is defined relative to a result set ("only when strict finds fewer than 3 rows") and therefore has no meaning for a single-tender match, so alerts match the strict semantics. This is verified by a test that compares "matcher says yes" with "strict search lists it" across 13 criteria shapes (state lists, status, category parent->child, value range, closing date range, keyword, reference, city, entity, combined) and 4 tenders.
+- **Scale.** Per `tender.created` event: one query loads alert-enabled searches (active search, creator ACTIVE and still a member of the search's organization, `alert_frequency <> OFF`); searches with identical criteria (canonical hash) are evaluated once; each distinct criteria set becomes `EXISTS (SELECT 1 FROM tenders t WHERE t.id = <the tender> AND <strict where>)` - a primary-key lookup, never a table scan; up to 50 criteria sets are evaluated per statement (`UNION ALL`) and 4 statements run concurrently. Cost is O(distinct criteria) primary-key lookups per event.
+- **Robustness.** A stored criteria set that no longer validates, or fails in the database, is skipped and logged; it cannot stop other users' alerts (tested).
+- **Recipients.** The saved search's creator (searches are organization-shared, alerts are personal), one notification per user per tender even when several of their searches match (the first by name is cited, up to 3 names stored). Alerts are **opt-in per search** (`alert_frequency` default `OFF`), so existing searches never start emailing.
+- **Updates.** Saved-search users are also eligible for corrigendum alerts on matching tenders (they are the users with a stated interest). They do not receive per-field update alerts; that is reserved for users who saved the tender.
+
+### 21.6 Which tender changes notify
+
+Worth notifying (saved-tender updates): `title`, `closingAt`, `openingAt`, `estimatedValue`, `emdAmount`, `tenderFee`, `lifecycle` (cancellation). Deliberately not: `description`, `city`, `locationText`, `sourceUrl`, `currency`, `publishedAt`, `referenceNumber`, `department`, `stateCode`, and internal metadata - they would train users to ignore alerts. A deadline change is described from the recorded `tender_versions` diff ("The closing date is now 20 Nov 2026, was 1 Oct 2026"). Cancelled tenders produce `TENDER_CANCELLED` instead of a generic update; a closed tender produces `TENDER_STATUS_CHANGED`.
+
+### 21.7 Deadline reminders
+
+A scheduled sweep (every 15 minutes) looks at saved tenders (watchlist) that are ACTIVE, not deleted/duplicate, not closed/cancelled/awarded/archived, and have a real `closing_at` in the future within 7 days. Each user chooses offsets from 7 days / 3 days / 1 day / 3 hours (default: **1 day only**; an empty list disables reminders). For each row the reminder that fires is the smallest offset that still covers the remaining time, so a tender with 3 days left triggers the "3 days" reminder once (not the passed "7 days"), and one saved with 5 hours left triggers only the smallest applicable offset. Dedup key = tender + exact closing instant + offset: a repeated sweep does nothing, and a *changed* deadline legitimately creates a new reminder. Tenders without a closing time, already past, cancelled or deleted are never reminded. Times in messages are IST; the notification's `expires_at` is the closing time (hidden from the UI afterwards, kept as history).
+
+### 21.8 Preferences
+
+`notification_preferences` stores only what the user changed (user, category, channel, enabled); everything else uses documented defaults (all categories on for both channels, deadline offsets [24h], quiet hours off). `notification_settings` holds deadline offsets and quiet hours (start/end `HH:mm` plus an IANA time zone, default Asia/Kolkata; overnight windows supported). The SYSTEM category is locked on: the API rejects an attempt to disable it (400) and the resolver ignores stored values for it. Rules: both channels off -> nothing is created; email off -> the in-app notification is still recorded and the delivery row says `SKIPPED / PREFERENCE_DISABLED`; in-app off but email on -> the record is stored already read (no unread badge) because email needs a record to track; quiet hours hold non-critical email until the window ends (BullMQ delay); critical/security mail is never held. Preference changes are audited (`NOTIFICATION_PREFERENCES_UPDATED`).
+
+### 21.9 In-app, real-time decision, self-healing
+
+The Phase 6 bell and page now use the real API: pagination (`page`, `pageSize` <= 100), `type` and `unread` filters, `unread-count`, mark read/unread/all-read, expired items hidden, and `entityAvailable` so a notification for a removed tender is never a dead link. **Real time is deliberately polling**: the count is re-read on load, on window focus and at most once per minute while the tab is visible (the list reloads only when the count grew). No WebSocket/SSE was introduced - alerts are minutes-scale, the polling cost is one tiny query per minute per open tab, and SSE remains the documented option if latency ever matters. A delivery still `QUEUED` after 10 minutes (queue message lost) is re-queued by the sweep with its deterministic job id (a no-op when the job still exists).
+
+### 21.10 Deduplication and idempotency
+
+The unique constraint `(user_id, dedup_key)` on `notifications` is the arbiter; the delivery service also pre-checks the batch so a replay is cheap.
+
+| Notification | Dedup key (per user) |
+|---|---|
+| saved-search match | `SAVED_SEARCH_MATCH:<tenderId>` (re-ingestion of the same tender by any event is a duplicate) |
+| tender update / cancelled / status | `<TYPE>:<outbox eventId>` |
+| corrigendum | `TENDER_CORRIGENDUM:<corrigendumId>` |
+| deadline reminder | `TENDER_DEADLINE:<tenderId>:<closingAt epoch ms>:<offset hours>` |
+| security / account | `SECURITY:<eventId>` / `ACCOUNT:<eventId>` |
+
+Email: one delivery row per notification (`UNIQUE(notification_id, channel)`) and the queue job id `notif-email.<deliveryId>` is deterministic. The email handler treats an already-`SENT` delivery as done, so a retry after an unacknowledged success never sends twice. Verified: replaying a `tender.created` event through the real queue produced no second notification or email (Docker), and replaying 5,000 plans created 0 rows in 0.66 s (Sec 21.16).
+
+### 21.11 Spam and volume safeguards
+
+Configurable (env): `NOTIFY_EMAIL_MAX_PER_SEARCH_PER_HOUR` (5), `NOTIFY_EMAIL_MAX_PER_USER_PER_HOUR` (20), `NOTIFY_INAPP_MAX_PER_SEARCH_PER_HOUR` (50), `NOTIFY_DIGEST_MAX_ITEMS` (20), `NOTIFY_MATCH_CHUNK_SIZE` (50). Policy: alerts are opt-in per search; **DAILY searches never send per-tender email** - matches wait as `DIGEST_PENDING` and go out as one digest email per user at 08:00 IST (up to 20 listed, "and N more" for the rest); **IMMEDIATE searches** send email up to the per-search/per-user hourly caps and the overflow folds into the next digest instead of being dropped; the in-app cap suppresses (and logs) matches beyond 50 per search per hour so a bulk ingestion cannot flood the bell. Critical/security notifications are exempt from caps and quiet hours. A single tender that matches thousands of searches still produces at most one notification per user.
+
+### 21.12 Frontend
+
+`/notifications`: server-paginated list, All/Unread tabs, type filter, per-row mark read/unread, Mark all read, loading/empty/error+retry states, preferences link; tender notifications link to `/tenders/:id` only when the tender exists. Bell menu: recent items, same rules. `/profile` gains a "Notification preferences" card (persisted, accessible switches per category and channel, locked security row, deadline-offset checkboxes, quiet hours with time zone) and honours `?tab=notifications` (the link in alert emails). Saved searches gain an Alerts control (Off / As new tenders arrive / Daily digest) on the card and in the save dialog.
+
+### 21.13 Database
+
+Migration `20260927090000_phase8_notifications` (additive, no data loss; existing notification rows keep working): `notifications` gains `organization_id`, `priority`, `metadata`, `dedup_key`, `source_event_id`, `template_key`, `template_version`, `expires_at`, unique `(user_id, dedup_key)`, indexes `(user_id, type, created_at DESC)` and `(organization_id)` (the existing `(user_id, is_read, created_at DESC)` serves the unread list); new `notification_preferences` (`UNIQUE(user_id, category, channel)`), `notification_settings`, `notification_deliveries` (indexes on status, user, user+status, digest; `UNIQUE(notification_id, channel)`); `saved_searches.alert_frequency` (+ index). Enums: `notification_priority`, `saved_search_alert_frequency`, `notification_category`, `notification_channel`, `delivery_status`. No separate event table: the existing `outbox_events` is the event log.
+
+### 21.14 Email
+
+- **Provider abstraction**: `EmailTransport` (unchanged contract, extended with optional pre-rendered `subject/text/html`), `PermanentEmailError` for non-retryable rejections. `LogEmailTransport` is the only implementation (dev/test); `EMAIL_DRIVER=smtp` still fails at boot with an explicit message. **No production provider is configured, so this phase does not claim real-world delivery.** The states are kept honest: GENERATED (notification row) -> QUEUED (delivery row + job) -> SENT (*accepted by the configured provider*; with the log driver that means captured, `provider='log'`, not delivered) -> ACTUALLY DELIVERED is not observable and not recorded. Bounce/delivered callbacks are left to a future real provider.
+- **Templates** (`email-templates.ts`, version 1, stored as `template_key`/`template_version` on every notification and delivery): saved-search match, tender update (also cancellation/closure), corrigendum, deadline reminder, system/security, saved-search digest. Each has a subject, plain text and HTML; consistent header/footer; a "View tender" call to action to `FRONTEND_URL/tenders/<uuid>`; reference number and IST dates; a "Manage notification preferences" link (`/profile?tab=notifications`); no public unsubscribe token system (the preferences page is the route).
+- **Security**: every dynamic value is HTML-escaped (no raw interpolation), subjects are stripped of line breaks/control characters (header injection), links are built only from our own origin and a validated UUID, security mail contains no token or tender data, error text stored on a delivery has addresses and long tokens removed, and the recipient address is never logged (the log driver masks it).
+- **Status machine and retry**: `QUEUED -> SENDING -> SENT`; a transient provider error -> `RETRYING` (attempt counted) and the job is retried with the `email` queue's exponential backoff (6 attempts, 30 s base, +-20 % jitter); retries exhausted -> `FAILED` (+ the job goes to the dead-letter path); `PermanentEmailError`, unknown template, render failure or missing delivery -> `FAILED`/permanent, no retry; a recipient who became unverified/suspended -> `SKIPPED`. `SKIPPED` rows also record why an email was not sent (`PREFERENCE_DISABLED`, `RECIPIENT_UNAVAILABLE`, `EMAIL_RATE_CAPPED`).
+
+### 21.15 Queues, jobs, schedules
+
+| Queue | Job | Concurrency | Attempts / backoff |
+|---|---|---|---|
+| `notifications` | `notification.dispatch` (one per domain event) | 10 | 5 / 10 s exponential |
+| `email` | `notification.email` (one per delivery) | 5 | 6 / 30 s exponential |
+| `maintenance` | `notification.deadline-sweep`, `notification.send-digests` | 1 | 3 / 60 s |
+
+Schedules (seeded into `job_schedules`, editable like every platform schedule): `notification-deadline-sweep` every 15 min, `notification-send-digests` daily 08:00 IST. No new queues or Redis connections were added; jobs use the shared producer/worker infrastructure and its dead-letter handling.
+
+### 21.16 Observability, audit, security
+
+Structured log lines (ids, type, counts, attempt, duration - never content, addresses or tokens): `notification generated`, `emails queued`, `notification suppressed: in-app rate cap`, `email capped`, `notification email accepted by provider`, `notification email attempt failed`, `deadline sweep completed`, `digest run completed`; every job result carries counts. Audit: preference changes; the notification/delivery tables are themselves the audit trail for generated -> queued -> sent/failed (timestamps, attempts, provider, sanitized error), and `read_at` for reads. Authorization: every route derives the user from the access token; there is no `userId`/`organizationId` parameter (unknown query params are rejected with 400), a notification that is not yours is a 404 indistinguishable from a missing one, preferences and history are per user, saved-search alerts go only to the search's creator while still a member. The admin surface is intentionally absent (Phase 12).
+
+### 21.17 Measured performance (synthetic data)
+
+`backend/scripts/notification-benchmark.cjs`, scratch database `ats_gem_bench` (dropped afterwards; refuses non-"bench" databases), fake queue and capturing transport so the numbers measure the pipeline, developer machine, Postgres 17 in Docker. Matching = time to find which of N alert-enabled saved searches match one tender:
+
+| Saved searches | Matches | before p50 / p95 (ms) | after p50 / p95 (ms) |
+|---|---|---|---|
+| 1 | 1 | 4.3 / 5.9 | (unchanged) |
+| 100 distinct | 4 | 176 / 232 | 100 / 172 |
+| 1,000 distinct | 34 | 1,365 / 1,564 | 442 / 654 |
+| 5,000 distinct | 167 | 2,042 / 2,332 | 763 / 873 |
+| 5,000 with 15 distinct criteria (grouped) | 1,001 | 50 / 64 | 45 / 56 |
+
+"Before" was the first implementation (sequential chunks, per-recipient queries); "after" adds 4 concurrent chunks and batch delivery. Notification generation for a tender that matches M users (all in-app + email queued): 100 users 359 ms (279/s), 1,000 users 1.28 s (780/s), 5,000 users 6.93 s (721/s) - before: 81/s, 83/s, 62/s. Replaying the same event (duplicate storm): 100 -> 23 ms, 1,000 -> 178 ms, 5,000 -> 658 ms with **0 notifications created** (before: 1.8 s / 25 s / 122 s); the duplicate rate is exactly 0. Email worker (single consumer, in-memory transport): 102 emails/s (5,000 in 49 s); with the queue's concurrency of 5 that scales roughly linearly until the database saturates. Interpretation: per-event matching cost is about 0.4-1.5 ms per *distinct* criteria set; 1,000 distinct saved-search criteria cost about 0.4 s per new tender, so a bulk ingestion of N new tenders costs N x that on the worker (which is a background cost, parallelizable across worker replicas). Batching several tenders into one evaluation is the next step if a real crawler makes this the bottleneck; it was not needed at these measured scales.
+
+### 21.18 Known limitations
+
+No SMS/WhatsApp/push (the transport abstraction leaves room); no production email provider and therefore no bounce/delivery feedback; matching uses strict search semantics (no typo tolerance); alerts go to the search's creator only (no team fan-out); no per-search deadline/quiet-hour overrides; polling (up to 1 minute) instead of push; no in-app digest view; the in-app hourly cap drops (and logs) overflow matches rather than folding them into a digest; a city name containing a comma cannot be a saved criterion (Phase 7 limitation).

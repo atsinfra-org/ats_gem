@@ -58,6 +58,12 @@ export const envSchema = z.object({
   OUTBOX_RELAY_ENABLED: booleanString.default(true),
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+  NOTIFY_EMAIL_MAX_PER_SEARCH_PER_HOUR: z.coerce.number().int().min(1).max(1000).default(5),
+  NOTIFY_EMAIL_MAX_PER_USER_PER_HOUR: z.coerce.number().int().min(1).max(1000).default(20),
+  NOTIFY_INAPP_MAX_PER_SEARCH_PER_HOUR: z.coerce.number().int().min(1).max(10000).default(50),
+  NOTIFY_DIGEST_MAX_ITEMS: z.coerce.number().int().min(1).max(100).default(20),
+  NOTIFY_MATCH_CHUNK_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+  SEARCH_EVENT_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(180),
   OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
   SCHEDULER_SYNC_INTERVAL_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
   /** Port for the worker/scheduler health server (the API serves health on PORT). 0 = any free port. */
@@ -102,6 +108,8 @@ export const envSchema = z.object({
   // docs/API-CONTRACT.md §1.5 "Auth endpoints: 10 req/15 min/IP". Login has its own failure-based lockout.
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().min(1).max(1_000_000).default(10),
   RATE_LIMIT_AUTH_WINDOW_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
+  RATE_LIMIT_SEARCH_MAX: z.coerce.number().int().min(1).max(1_000_000).default(240),
+  RATE_LIMIT_SEARCH_WINDOW_SECONDS: z.coerce.number().int().min(1).max(3600).default(60),
 });
 
 export type Env = z.infer<typeof envSchema>;

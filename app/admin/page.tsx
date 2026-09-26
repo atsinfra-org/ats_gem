@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
-import { Users, Building2, FileText, Server, FolderOpen, IndianRupee } from "lucide-react";
-import { StatCard } from "@/components/charts/stat-card";
-import { ChartCard } from "@/components/charts/chart-card";
-import { UserGrowthChart, TenderIngestionChart, RevenueChart, SourceBreakdownChart } from "@/components/charts/admin-charts";
+import Link from "next/link";
+import { Building2, GitMerge, Info } from "lucide-react";
 
 export const metadata: Metadata = { title: "Admin Overview" };
 
@@ -10,32 +8,43 @@ export default function AdminOverviewPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold tracking-tight text-foreground">Platform Overview</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Monitor platform health, growth and revenue at a glance.</p>
+        <h2 className="text-2xl font-bold tracking-tight text-foreground">Admin</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          A minimal admin surface for the backend functionality available today. The full admin panel
+          (users, companies, sources, billing, analytics, monitoring) is a later phase.
+        </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
-        <StatCard label="Total Users" value="25,600" icon={Users} trend={14} trendLabel="MoM" />
-        <StatCard label="Active Companies" value="3,240" icon={Building2} trend={9} trendLabel="MoM" />
-        <StatCard label="Live Tenders" value="1,04,820" icon={FileText} trend={6} trendLabel="MoM" />
-        <StatCard label="Crawler Sources" value="5,120" icon={Server} trend={2} trendLabel="MoM" />
-        <StatCard label="Documents" value="8,42,300" icon={FolderOpen} trend={11} trendLabel="MoM" />
-        <StatCard label="Monthly Revenue" value="₹32.2L" icon={IndianRupee} trend={18} trendLabel="MoM" />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Link
+          href="/admin/procuring-entities"
+          className="flex items-start gap-4 rounded-lg border border-border bg-card p-5 transition-colors hover:border-primary/40"
+        >
+          <Building2 className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Procuring Entities</h3>
+            <p className="mt-1 text-sm text-muted-foreground">Browse resolved procuring entities and merge duplicates.</p>
+          </div>
+        </Link>
+        <Link
+          href="/admin/duplicate-candidates"
+          className="flex items-start gap-4 rounded-lg border border-border bg-card p-5 transition-colors hover:border-primary/40"
+        >
+          <GitMerge className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Duplicate Candidates</h3>
+            <p className="mt-1 text-sm text-muted-foreground">Review tenders the deduplication engine flagged for confirmation.</p>
+          </div>
+        </Link>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <ChartCard title="User Growth" description="New registered users over time">
-          <UserGrowthChart />
-        </ChartCard>
-        <ChartCard title="Tender Ingestion" description="Tenders crawled per day (last 7 days)">
-          <TenderIngestionChart />
-        </ChartCard>
-        <ChartCard title="Subscription Revenue" description="Monthly recurring revenue trend">
-          <RevenueChart />
-        </ChartCard>
-        <ChartCard title="Tender Sources" description="Distribution by source type">
-          <SourceBreakdownChart />
-        </ChartCard>
+      <div className="flex items-start gap-3 rounded-lg border border-border bg-secondary/40 p-4 text-sm text-muted-foreground">
+        <Info className="mt-0.5 h-4 w-4 shrink-0" />
+        <p>
+          User/company management, source/crawler control, document administration, billing,
+          notifications and analytics dashboards are not implemented yet - there is no backend API
+          for them in this phase.
+        </p>
       </div>
     </div>
   );

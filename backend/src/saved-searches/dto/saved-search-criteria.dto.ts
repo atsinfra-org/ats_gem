@@ -1,19 +1,10 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsISO8601, IsOptional, IsString, IsUUID, Length, Matches } from 'class-validator';
-import { TenderStatus } from '../../generated/prisma/enums';
+import { OmitType } from '@nestjs/swagger';
+import { ListTendersQueryDto } from '../../tenders/dto/list-tenders.query.dto';
 
 /**
- * The filterable fields a saved search can capture — the same shape `ListTendersQueryDto` accepts,
- * minus pagination. Kept as its own class (not the query DTO itself) so criteria and "the current
- * page of a search" can evolve independently as the search engine grows in later phases.
+ * A saved search captures exactly the search model of `GET /search/tenders` (same fields, validators and
+ * normalization), minus paging. Phase 2-6 criteria (`q`, single `state`/`category`/`status`, date bounds)
+ * remain valid: list fields accept a single value or a list, and stored legacy rows keep working because
+ * readers treat a string as a one-element list. Saving a search never creates a notification.
  */
-export class SavedSearchCriteriaDto {
-  @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 200) q?: string;
-  @ApiPropertyOptional() @IsOptional() @Matches(/^[A-Z]{2}$/) state?: string;
-  @ApiPropertyOptional() @IsOptional() @IsUUID() category?: string;
-  @ApiPropertyOptional({ enum: TenderStatus }) @IsOptional() @IsEnum(TenderStatus) status?: TenderStatus;
-  @ApiPropertyOptional() @IsOptional() @IsISO8601() publishedFrom?: string;
-  @ApiPropertyOptional() @IsOptional() @IsISO8601() publishedTo?: string;
-  @ApiPropertyOptional() @IsOptional() @IsISO8601() closingFrom?: string;
-  @ApiPropertyOptional() @IsOptional() @IsISO8601() closingTo?: string;
-}
+export class SavedSearchCriteriaDto extends OmitType(ListTendersQueryDto, ['page', 'pageSize', 'sortBy', 'sortOrder'] as const) {}

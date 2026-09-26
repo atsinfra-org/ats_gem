@@ -38,8 +38,8 @@ Two styles, chosen per endpoint:
 
 ### 1.4 Filters & sorting
 - Multi-value filters are repeated or comma-separated: `state=MH,UP` ≡ `state=MH&state=UP`.
-- Ranges: `valueMin`, `valueMax`, `emdMin`, `emdMax` (rupees, decimal strings accepted), `publishedFrom`, `publishedTo`, `closingFrom`, `closingTo` (ISO dates).
-- Sort: `sort=relevance|newest|closing_soon|value_desc|value_asc` (search); list endpoints accept `sort=<field>` / `sort=-<field>`.
+- **Search (Phase 7, authoritative in Sec 5.3):** ranges are `minValue/maxValue`, `minEmd/maxEmd`, `minFee/maxFee` (exact decimal strings) and `publishedFrom/To`, `closingFrom/To`, `openingFrom/To` (date-only = IST calendar day, or an ISO instant); sort is `sort=relevance|newest|closingSoonest|closingLatest|valueHigh|valueLow`. The `valueMin` / `value_desc` style names originally sketched here were not adopted.
+- Other list endpoints accept `sort=<field>` / `sort=-<field>`.
 
 ### 1.5 Rate limits
 Responses include `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`. Exceeding returns `429 RATE_LIMITED` with `Retry-After`.
@@ -57,7 +57,7 @@ search, document URLs — is Phase 10 ("tiered rate limits").
 | Paid plans (Phase 10) | 600 req/min/user |
 | Admin (Phase 10) | 1 200 req/min/user |
 | Auth endpoints (login, register, reset) | 10 req/15 min/IP + per-account lockout |
-| Search (Phase 10) | 60 req/min anonymous, 120 authenticated |
+| Search (**Phase 7**: `search/tenders`, `search/suggestions`, `search/entities`, `search/events`) | 240 req/min per IP and route (`RATE_LIMIT_SEARCH_MAX` / `RATE_LIMIT_SEARCH_WINDOW_SECONDS`); per-audience tiers stay Phase 10 |
 | Document URLs (Phase 10) | 30 req/min/user + plan download quota |
 
 ### 1.6 Auth levels used below
@@ -166,7 +166,7 @@ summary/entitlements and `ent:team_seats` do not exist before Phase 8, so `GET /
 
 ## 5. Tenders & search
 
-**Phase 2/3 implement a plain indexed-column filter, not the relevance-ranked search engine below**
+**Superseded for search by Sec 5.3 (Phase 7): `GET /search/tenders` is now the ranked search endpoint. The rest of this paragraph is the Phase 2/3 state, kept for history.** Phase 2/3 implement a plain indexed-column filter, not the relevance-ranked search engine below
 (that is Phase 4/5, behind the same `GET /search/tenders` path and response shape). Live now on
 `GET /tenders` (not yet renamed to `/search/tenders`): `q` (title substring, case-insensitive),
 `state`, `category`, `status`, `procuringEntity` (canonical entity UUID, Phase 3), `district`,
@@ -231,13 +231,57 @@ source currently tracking the tender).
 | `GET /documents/archives/:archiveId` (Phase 6) | user | `{ status, url?, expiresAt? }` |
 | `GET /meta/states` · `/meta/categories` · `/meta/tender-types` | public | reference data for filters — live now. `/meta/sources` (Phase 4/5) not yet. |
 
+### 5.3 Search & discovery (Phase 7)
+
+Authoritative behaviour and rationale: ARCHITECTURE Sec 20. Everything here is public unless marked (history requires auth).
+
+**`GET /search/tenders`** (public; `search` rate-limit policy; a bearer token, when sent, adds `isSaved` and records history)
+
+| Param | Type | Notes |
+|---|---|---|
+| `q` | string (<= 400 chars sent, <= 200 after normalization) | normalized, prefix-aware, typo-tolerant free text over title, reference, department/entity, category, location, tender type |
+| `reference` | string | exact-or-prefix, punctuation-insensitive |
+| `state` | `MH,UP` | two-letter codes |
+| `district`, `category`, `procuringEntity`, `source` | UUID lists | a `category` parent also matches its children |
+| `city` | list | case-insensitive exact |
+| `tenderType` | key list | see `/meta/tender-types` |
+| `status` | `TenderStatus` list | |
+| `minValue` `maxValue` `minEmd` `maxEmd` `minFee` `maxFee` | decimal string, up to 16 digits and 2 decimals | exact, inclusive |
+| `publishedFrom/To` `closingFrom/To` `openingFrom/To` | ISO-8601 | date-only = IST calendar day (from = 00:00 IST, to = next-day 00:00 IST, exclusive); instants as given; inverted range = 400 |
+| `sort` | `relevance` (default), `newest`, `closingSoonest`, `closingLatest`, `valueHigh`, `valueLow` | legacy `sortBy` / `sortOrder` still honoured; `sort` wins |
+| `page`, `pageSize` | int | pageSize 1-100 (default 20); anonymous callers get page 1, at most 20 rows |
+
+Response: `data[]` tender summaries, each with `matchReason` (`REFERENCE_EXACT | REFERENCE_PREFIX | REFERENCE_PARTIAL | TITLE_PHRASE | TITLE_TERMS | ENTITY | OTHER_FIELDS | FUZZY`, or `null` when there was no keyword/reference); `meta.pagination = { page, pageSize, total, totalPages, totalCapped }` (`total` is capped at 10 000 and `totalCapped` says so); `meta.sort` is the sort actually applied; `meta.ranked` says whether a keyword/reference ranked the results.
+
+Errors: `400 VALIDATION_FAILED` (bad values, inverted ranges, over-long query, and `details[].code = PAGE_TOO_DEEP` for offsets >= 10 000), `429 RATE_LIMITED`, `503 DEPENDENCY_UNAVAILABLE` (generic message, no internals).
+
+**Support endpoints**
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /search/suggestions?q=` | public (a token adds the caller's own recents) | `{ recent[], references[], entities[], categories[], states[], popular[] }`; popular needs >= 3 distinct users |
+| `GET /search/entities?q=` | public | server-side organization picker, min 2 chars, at most 10 |
+| `GET /search/entities?ids=a,b` | public | display names for up to 20 valid entity ids (labels for shared URLs); junk ids ignored |
+| `GET /search/cities?q=&state=` | public | distinct city names of live tenders with counts, min 2 chars, at most 20; `state` (two letters) optional; server-side lookup for the `city` filter |
+| `GET /search/history?limit=` | required | the caller's own history, newest first |
+| `DELETE /search/history/:id` | required | removes one of the caller's items (other users' ids return 404) |
+| `DELETE /search/history` | required | clears the caller's history |
+| `POST /search/events` | public, 202 | closed-shape analytics event (ARCHITECTURE Sec 20.9); unknown properties return 400 |
+| `GET /search/health` | public | counts and last index run only |
+| `GET /meta/sources` | public | `{ id, name, slug }[]` for the source filter (no crawl config) |
+| `GET /meta/districts?state=` | public | districts; empty where sources provide none |
+
+**Saved searches** reuse the search query model: `criteria` accepts every filter above (list-valued) plus `q` and `sort`, but not `page` / `pageSize`. Pre-Phase-7 criteria with single strings (`state: "MH"`) remain valid and are read as one-element lists.
+
 ## 6. Market data (landing page) — `/market`
 
 | Method & path | Auth | Response |
 |---|---|---|
-| `GET /market/snapshot` | public, cached 5 min | `{ liveTenders, closingThisWeek: Money, sources, lastCrawlAt, states: [{ code, name, type, live, closingThisWeek: Money, topBuyer }], topBuyers: [...], valueBands: [...], portals: [{ name, status, lastSyncedAt, today }] }` |
-| `GET /market/wire` | public | `?limit=40&state=MH` → latest published open tenders `{ id, title, department, value: Money, state: {code,name}, publishedAt }[]` |
-| `GET /market/closing` | public | `?limit=5` → `{ id, title, department, closingAt }[]` |
+| `GET /market/snapshot` | public, cached 5 min (Redis, keyed under `QUEUE_PREFIX`) | `{ liveTenders, closingThisWeek: Money, sources, lastCrawlAt, states: [{ code, name, type, live, closingThisWeek: Money, topBuyer }], topBuyers: [{ id, name, shortName, live, value: Money }] (top 6), valueBands: [{ key, min, max, count }], portals: [{ id, name, status: ok\|delayed\|down, lastSyncedAt, today }] (top 6), computedAt }` |
+| `GET /market/wire` | public | `?limit=1..50 (40)&state=MH` → latest published live tenders `{ id, title, department, value: Money \| null, state: {code,name} \| null, publishedAt }[]` |
+| `GET /market/closing` | public | `?limit=1..20 (5)` → live tenders with a deadline, soonest first `{ id, title, department, closingAt }[]` |
+
+Implemented (`src/market`). **Live** = not deleted, not a confirmed duplicate, status `OPEN`/`CLOSING_SOON` and deadline not passed (or none). `closingThisWeek` sums INR `estimatedValue` of live tenders closing in the next 7 days. `topBuyer` is the procuring entity (short name when set) with the most live tenders in the state, falling back to the raw `department` for unresolved tenders; `department` in wire/closing is the entity name, else the raw department. Value bands count live INR tenders with a disclosed value, lower bound inclusive: `UNDER_10L`, `10L_TO_1CR`, `1CR_TO_10CR`, `10CR_TO_100CR`, `OVER_100CR` (`min`/`max` are INR decimal strings, `null` when open-ended). Portal `status` maps source health: `HEALTHY` → `ok`, `UNKNOWN`/`DEGRADED` → `delayed`, otherwise `down`; `today` counts source records first seen since IST midnight.
 
 ## 7. Watchlists, saved searches, alerts, bids
 
@@ -262,21 +306,25 @@ results-runner endpoint). Follows, alerts and bids are not implemented.
 
 ## 8. Notifications — `/notifications`
 
-**Phase 2 implements in-app records only** (list, unread count, mark-read) — no delivery over any
-channel, no preferences, no SSE stream. `type` is free text (e.g. `"SYSTEM"`), not the closed set
-implied below; nothing creates notifications automatically yet (`NotificationsService.create()` is
-called directly by other services, but no feature currently calls it).
+**Phase 8 as built.** Notifications are generated asynchronously by the worker from real domain events (ARCHITECTURE Sec 21); the API only reads and updates the caller's own rows. Identity always comes from the access token: there is no `userId`/`organizationId` parameter, and unknown query parameters are rejected with `400`. A notification that is not yours is `404` (indistinguishable from a missing one).
 
 | Method & path | Auth | Notes |
 |---|---|---|
-| `GET /notifications` | user | *(not yet cursor-based)* latest 50, newest first; `meta.unreadCount` on every response |
-| `GET /notifications/unread-count` (Phase 7) | user | `{ count }` — for now, read it from `GET /notifications`'s `meta.unreadCount` |
-| `POST /notifications/:id/read` | user | *(implemented as `PATCH`, not `POST`)* idempotent |
-| `POST /notifications/read-all` | user | *(implemented as `PATCH`, not `POST`)* |
-| `DELETE /notifications` (Phase 7) | user | clears (soft) all |
-| `GET /notifications/stream` (Phase 7) | user (token via cookie or `?access_token`) | **Server-Sent Events**: `event: notification` with a `Notification` payload; `event: unread-count`. Heartbeat every 25 s. |
+| `GET /notifications` | user | Query: `page` (default 1), `pageSize` (<= 100, default 20), `type` (one of the types below), `unread=true`. Newest first; expired items hidden. `meta.unreadCount`, `meta.pagination {page,pageSize,total,totalPages}`. |
+| `GET /notifications/unread-count` | user | `{ unreadCount }` (cheap; used for polling) |
+| `PATCH /notifications/:id/read` | user | idempotent; `404` if not yours |
+| `PATCH /notifications/:id/unread` | user | idempotent; `404` if not yours |
+| `PATCH /notifications/read-all` | user | `{ updated }` |
+| `GET /notifications/preferences` | user | per-category `{ inApp, email, locked }`, `deadlineOffsetsHours`, `allowedDeadlineOffsetsHours` (168, 72, 24, 3), `quietHours {enabled,start,end,timezone}`; documented defaults when nothing was saved |
+| `PATCH /notifications/preferences` | user | partial update, strict schema (unknown keys `400`): `categories.<CATEGORY>.{inApp,email}`, `deadlineOffsetsHours` (subset of the allowed offsets, `[]` disables reminders), `quietHours` (`start`/`end` `HH:mm`, IANA `timezone`). The `SYSTEM` category cannot be disabled (`400`). Audited. |
 
-Realtime strategy: SSE only (one-way server → client is all the product needs; works through proxies and scales with Redis pub/sub fan-out). WebSockets are not planned.
+Notification object: `id, type, title, message, entityType, entityId, entityAvailable, priority (LOW|NORMAL|HIGH|CRITICAL), metadata, isRead, readAt, expiresAt, createdAt`. `entityAvailable` is `false` when the linked tender no longer exists (the UI must not link it). `metadata` is a closed, validated snapshot (tender id/title/reference/closing date, changed fields, saved-search id/names, corrigendum id/title, offset hours, security kind) - never a free-form payload.
+
+Types: `SAVED_SEARCH_MATCH`, `TENDER_UPDATED`, `TENDER_DEADLINE`, `TENDER_CORRIGENDUM`, `TENDER_CANCELLED`, `TENDER_STATUS_CHANGED`, `SECURITY`, `ACCOUNT`. Categories (for preferences): `SAVED_SEARCH_ALERTS`, `SAVED_TENDER_UPDATES`, `DEADLINE_REMINDERS`, `CORRIGENDA`, `STATUS_CHANGES`, `SYSTEM` (locked).
+
+Saved-search alerts: `POST/PATCH /saved-searches` accept `alertFrequency` = `OFF` (default) | `IMMEDIATE` | `DAILY`; the saved search object returns it. Alerts are opt-in per search.
+
+Realtime strategy: **polling** (count on load, on focus and at most every 60 s while visible). SSE/WebSocket streams and `DELETE /notifications` from the original sketch were not built (ARCHITECTURE Sec 21.9).
 
 ## 9. Billing — `/plans`, `/subscriptions`, `/payments`, `/invoices`
 

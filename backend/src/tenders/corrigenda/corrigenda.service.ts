@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AuditLogService } from '../../audit/audit-log.service';
 import { AppError } from '../../common/errors/app-error';
 import { PrismaService } from '../../database/prisma.service';
+import { OutboxService } from '../../outbox/outbox.service';
 
 export interface CreateCorrigendumInput {
   tenderId: string;
@@ -28,6 +29,7 @@ export class CorrigendaService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditLogService,
+    private readonly outbox: OutboxService,
   ) {}
 
   list(tenderId: string, params: { take: number; skip: number }) {
@@ -66,6 +68,7 @@ export class CorrigendaService {
           data: { tenderId: input.tenderId, eventType: 'CORRIGENDUM', eventAt: input.publishedAt, title: input.title, description: input.description ?? null, sourceReference: input.sourceReference ?? null },
         });
       }
+      await this.outbox.record(tx, 'tender.corrigendum_created', { tenderId: input.tenderId, corrigendumId: corrigendum.id });
       await this.audit.record({ actorUserId, action: 'TENDER_CORRIGENDUM_CREATED', resourceType: 'TenderCorrigendum', resourceId: corrigendum.id, newValue: { title: corrigendum.title, publishedAt: corrigendum.publishedAt.toISOString() } }, tx);
       return corrigendum;
     });

@@ -123,6 +123,11 @@ describe('Transactional outbox (e2e, PostgreSQL)', () => {
           job: { name: 'search.index-tender', payload: expect.objectContaining({ eventId, eventType: 'tender.created' }) },
           correlationId: 'req-outbox-0002',
         },
+        {
+          jobId: `evt.${eventId}.notification.dispatch`,
+          job: { name: 'notification.dispatch', payload: { eventId, eventType: 'tender.created', subject: { type: 'tender', id: expect.any(String) } } },
+          correlationId: 'req-outbox-0002',
+        },
       ]);
       const events = await prisma.outboxEvent.findMany();
       expect(events.every((e) => e.publishedAt !== null && e.attempts === 1)).toBe(true);
@@ -174,8 +179,9 @@ describe('Transactional outbox (e2e, PostgreSQL)', () => {
       await Promise.all(replicas.map(drain));
 
       const jobIds = publisher.published.map((p) => p.jobId);
-      expect(jobIds).toHaveLength(30);
-      expect(new Set(jobIds).size).toBe(30);
+      // every tender event fans out to two jobs (search indexing + notification dispatch), each exactly once
+      expect(jobIds).toHaveLength(60);
+      expect(new Set(jobIds).size).toBe(60);
       expect(await prisma.outboxEvent.count({ where: { publishedAt: null } })).toBe(0);
     });
 
@@ -192,7 +198,7 @@ describe('Transactional outbox (e2e, PostgreSQL)', () => {
         })
         .catch(() => undefined);
       await relay(publisher).tick();
-      expect(publisher.published.map((p) => p.jobId)).toEqual([`evt.${eventId}.search.index-tender`, `evt.${eventId}.search.index-tender`]);
+      expect(publisher.published.map((p) => p.jobId)).toEqual([`evt.${eventId}.search.index-tender`, `evt.${eventId}.search.index-tender`, `evt.${eventId}.notification.dispatch`]);
       expect(await prisma.outboxEvent.count({ where: { publishedAt: null } })).toBe(0);
     });
   });

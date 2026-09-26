@@ -13,32 +13,55 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useAppStore } from "@/lib/store/app-store";
+import { createSavedSearch } from "@/lib/api/saved-searches";
+import { ApiError } from "@/lib/api/client";
+import type { FilterState } from "@/components/search/filter-panel";
+import { buildChips, type LabelLookup } from "@/lib/search/chips";
+import { toCriteria, type SortKey } from "@/lib/search/search-state";
+import type { SavedSearchAlertFrequency, SavedSearchCriteria } from "@/lib/api/types";
 
 export function SaveSearchModal({
   open,
   onOpenChange,
-  keywords,
-  filterSummary,
+  keyword,
+  filters,
+  sort = "relevance",
+  lookup,
+  onSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  keywords: string;
-  filterSummary: string[];
+  keyword: string;
+  filters: FilterState;
+  sort?: SortKey;
+  lookup?: LabelLookup;
+  onSaved?: () => void;
 }) {
-  const { addSavedSearch } = useAppStore();
   const [name, setName] = React.useState("");
   const [saving, setSaving] = React.useState(false);
+  const [alerts, setAlerts] = React.useState<SavedSearchAlertFrequency>("OFF");
+  const [error, setError] = React.useState<string | null>(null);
+
+  const searchState = { q: keyword, filters, sort, page: 1 };
+  const summary = buildChips(searchState, lookup).map((c) => c.label);
 
   async function handleSave() {
     if (!name.trim()) return;
     setSaving(true);
-    await new Promise((r) => setTimeout(r, 500));
-    addSavedSearch({ name, keywords, filters: filterSummary, alertsEnabled: true });
-    setSaving(false);
-    setName("");
-    onOpenChange(false);
-    toast.success("Search saved");
+    setError(null);
+    const criteria = toCriteria(searchState) as SavedSearchCriteria;
+    try {
+      await createSavedSearch(name.trim(), criteria, alerts);
+      setName("");
+      setAlerts("OFF");
+      onOpenChange(false);
+      toast.success("Search saved");
+      onSaved?.();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save this search.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -47,7 +70,7 @@ export function SaveSearchModal({
         <DialogHeader>
           <DialogTitle>Save this search</DialogTitle>
           <DialogDescription>
-            We&apos;ll notify you whenever new tenders match this search criteria.
+            Save these criteria to quickly re-run this search later from Saved Searches.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -60,15 +83,25 @@ export function SaveSearchModal({
               onChange={(e) => setName(e.target.value)}
             />
           </div>
-          {filterSummary.length > 0 && (
+          <div className="space-y-1.5">
+            <Label htmlFor="search-alerts">Alerts</Label>
+            <select id="search-alerts" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={alerts} onChange={(e) => setAlerts(e.target.value as SavedSearchAlertFrequency)}>
+              <option value="OFF">Off (no alerts)</option>
+              <option value="IMMEDIATE">Alert me as new tenders arrive</option>
+              <option value="DAILY">Daily digest</option>
+            </select>
+            <p className="text-xs text-muted-foreground">Alerts are in-app and by email according to your notification preferences. You can change this later under Saved Searches.</p>
+          </div>
+          {summary.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
-              {filterSummary.map((f) => (
+              {summary.map((f) => (
                 <span key={f} className="rounded-full bg-secondary px-2.5 py-1 text-xs text-secondary-foreground">
                   {f}
                 </span>
               ))}
             </div>
           )}
+          {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>

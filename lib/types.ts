@@ -110,7 +110,7 @@ export interface StateSnapshot {
   name: string;
   live: number;
   closingWeekCr: number;
-  topBuyer: string;
+  topBuyer: string | null;
 }
 
 export interface BuyerSnapshot {
@@ -130,7 +130,7 @@ export interface ValueBand {
 export interface PortalSnapshot {
   name: string;
   status: "ok" | "delayed" | "down";
-  syncedMinutesAgo: number;
+  lastSyncedAt: string | null;
   today: number;
 }
 
@@ -138,7 +138,7 @@ export interface MarketSnapshot {
   liveTenders: number;
   closingThisWeekCr: number;
   sources: number;
-  lastCrawlMinutesAgo: number;
+  lastCrawlAt: string | null;
   states: StateSnapshot[];
   topBuyers: BuyerSnapshot[];
   valueBands: ValueBand[];
@@ -149,9 +149,10 @@ export interface WireItem {
   id: string;
   title: string;
   department: string;
-  value: number;
-  stateName: string;
-  stateCode: string;
+  value: number | null;
+  stateName: string | null;
+  stateCode: string | null;
+  publishedAt: string;
 }
 
 export interface ClosingItem {

@@ -48,7 +48,11 @@ target design:
 | `stored_files` | as §6 | `UNIQUE(checksum_sha256)` |
 | `saved_searches` | criteria as a JSONB blob (validated at the API layer against the same shape `GET /search/tenders` accepts), scoped to `organization_id` per ADR-06 | index `(organization_id)` |
 | `watchlist_items` | scoped to `user_id`, not `organization_id` (a personal shortlist) | `UNIQUE(user_id, tender_id)`; index `(tender_id)` |
-| `notifications` | `type` is free text, not an enum (open-ended set — see conventions above) | index `(user_id, is_read, created_at DESC)` |
+| `notifications` | `type` is free text, not an enum (open-ended set — see conventions above). **Phase 8** adds `organization_id`, `priority` (`notification_priority`), `metadata JSONB` (closed validated snapshot), `dedup_key`, `source_event_id`, `template_key`, `template_version`, `expires_at` | `UNIQUE(user_id, dedup_key)`; indexes `(user_id, is_read, created_at DESC)`, `(user_id, type, created_at DESC)`, `(organization_id)` |
+| `notification_preferences` | **Phase 8**: `user_id`, `category` (`notification_category`), `channel` (`IN_APP`/`EMAIL`), `enabled` | `UNIQUE(user_id, category, channel)`; only explicit choices are stored, defaults live in code |
+| `notification_settings` | **Phase 8**: `user_id` PK, `deadline_offsets_hours INT[]` (default `{24}`), `quiet_hours_enabled`, `quiet_start`, `quiet_end` (`HH:mm`), `timezone` | one row per user |
+| `notification_deliveries` | **Phase 8**: `user_id`, `notification_id NULL`, `digest_id NULL` (self-FK for digest members), `channel`, `status` (`delivery_status`: QUEUED, SENDING, SENT, RETRYING, FAILED, SKIPPED, DIGEST_PENDING, DIGESTED), `template_key`, `template_version`, `provider`, `provider_message_id`, `attempts`, `skip_reason`, `last_error` (sanitized), `item_count`, `queued_at`, `sent_at`, `failed_at` | `UNIQUE(notification_id, channel)`; indexes `(status, created_at)`, `(user_id, created_at DESC)`, `(user_id, status)`, `(digest_id)` |
+| `saved_searches.alert_frequency` | **Phase 8**: `saved_search_alert_frequency` OFF (default) / IMMEDIATE / DAILY | index `(alert_frequency)` |
 | `audit_logs` | as §9 | index `(resource_type, resource_id)`, `(actor_user_id, created_at DESC)`, `(action, created_at DESC)` |
 
 **Partial unique indexes remain deferred** (need raw SQL or Prisma's `partialIndexes` preview flag —
@@ -130,7 +134,7 @@ Login-attempt counters and lockouts live in Redis (TTL-based), not Postgres.
 | `status_computed_at` | TIMESTAMPTZ | |
 | `is_flagged`, `flag_reason` | | moderation |
 | `last_synced_at` | TIMESTAMPTZ | |
-| `search_vector` | TSVECTOR (generated) | only used by `PostgresSearchProvider` |
+| `search_vector` | TSVECTOR | **Phase 7**: maintained by trigger `tenders_search_vector_trg` via `tender_search_vector_build()` (weights A title+reference, B department+entity, C category/location/state, D tender type); recomputed by the `search.index-tender` job and `search:reindex`. See ARCHITECTURE Sec 20.2 |
 | `deleted_at`, `deleted_by` | | soft delete |
 
 Constraints: `UNIQUE(procuring_entity_id, reference_number_normalized) WHERE reference_number_normalized IS NOT NULL AND deleted_at IS NULL` (database-level duplicate prevention); CHECKs `closing_at >= published_at`, non-negative money.
@@ -143,7 +147,9 @@ Indexes (from real query patterns, all partial `WHERE deleted_at IS NULL`):
 - `(published_at DESC)` — latest first, market wire
 - `(reference_number_normalized)`
 - GIN `(title_normalized gin_trgm_ops)` — fuzzy dedupe
-- GIN `(search_vector)` — Postgres search provider only
+- GIN `(search_vector)` — **Phase 7**: `tenders_search_vector_gin_idx`, keyword search
+- GIN `(reference_number_normalized gin_trgm_ops)` — `tenders_reference_norm_trgm_idx`, partial-reference matching
+- Phase 7 filter/sort support: `tenders_published_id_idx` (partial, `published_at DESC, id DESC` where not deleted/duplicate), `tenders_state_published_idx`, `tenders_closing_at_idx`, `tenders_opening_at_idx`, `tenders_estimated_value_idx`, `tenders_emd_amount_idx`, `tenders_tender_fee_idx`, `tenders_tender_type_key_idx`, `tenders_city_lower_idx` (`lower(city)`), and `tender_source_records_source_tender_idx` for the source filter
 
 ### Source linkage & versions
 | Table | Key columns | Constraints / indexes |
@@ -262,7 +268,9 @@ Phase 4 also added three new tables, all under docs/ARCHITECTURE.md §19:
 | `contact_messages` | `name`, `email`, `subject`, `message`, `ip`, `handled_at` | public contact form; rate limited |
 | `daily_tender_stats` | `date`, `state_code`, `category_id`, `source_id`, `tenders_published`, `tenders_closing`, `value_published NUMERIC` | rollup refreshed by the analytics job |
 | `market_snapshots` | `computed_at`, `payload JSONB` | cached landing-page aggregates (map, value bands, top buyers) |
-| `search_events` | `user_id NULL`, `query`, `filters JSONB`, `result_count`, `latency_ms`, `created_at` | search analytics; retention 180 days; partition monthly |
+| `search_events` | **Phase 7 as built**: `event_type` (`SEARCH_SUBMITTED, FILTER_APPLIED, FILTER_REMOVED, SORT_CHANGED, RESULT_OPENED, RESULT_SAVED, SEARCH_SAVED, SUGGESTION_SELECTED`), `user_id NULL` (no FK), `organization_id NULL`, `query_normalized`, `name`, `value`, `tender_id NULL`, `position`, `result_count`, `created_at` | append-only, closed shape (no free-form payload, no IP); purged daily beyond `SEARCH_EVENT_RETENTION_DAYS` (default 180) by `maintenance.search-events-purge`, batched |
+| `search_history` | **Phase 7**: `user_id` (FK), `organization_id NULL`, `query_normalized`, `filters JSONB`, `dedup_key`, `search_count`, `last_searched_at` | `UNIQUE(user_id, dedup_key)`; authenticated users only, capped at 200 per user; never shared (popular terms need >= 3 distinct users) |
+| `search_index_runs` | **Phase 7**: `kind` (`REINDEX`, `VERIFY`), `status`, `started_at`, `completed_at`, `processed`, `failed`, `details JSONB` | observability for `search:reindex` / `search:verify` and `/search/health` |
 
 ## 10. Migrations & data safety
 - Every schema change is a reviewed Prisma migration; destructive changes go expand → migrate data → contract across releases.

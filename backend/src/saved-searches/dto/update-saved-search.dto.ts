@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsBoolean, IsOptional, IsString, Length, ValidateNested } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, Length, ValidateNested } from 'class-validator';
 import { SavedSearchCriteriaDto } from './saved-search-criteria.dto';
 
 export class UpdateSavedSearchDto {
@@ -13,4 +13,9 @@ export class UpdateSavedSearchDto {
   criteria?: SavedSearchCriteriaDto;
 
   @ApiPropertyOptional() @IsOptional() @IsBoolean() isActive?: boolean;
+
+  @ApiPropertyOptional({ enum: ['OFF', 'IMMEDIATE', 'DAILY'] })
+  @IsOptional()
+  @IsIn(['OFF', 'IMMEDIATE', 'DAILY'])
+  alertFrequency?: 'OFF' | 'IMMEDIATE' | 'DAILY';
 }

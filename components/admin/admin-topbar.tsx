@@ -12,16 +12,8 @@ import { AdminSidebar } from "@/components/admin/admin-sidebar";
 
 const titleMap: Record<string, string> = {
   "/admin": "Overview",
-  "/admin/users": "Users",
-  "/admin/companies": "Companies",
-  "/admin/tenders": "Tenders",
-  "/admin/sources": "Sources",
-  "/admin/documents": "Documents",
-  "/admin/subscriptions": "Subscriptions",
-  "/admin/payments": "Payments",
-  "/admin/notifications": "Notifications",
-  "/admin/audit-logs": "Audit Logs",
-  "/admin/settings": "Settings",
+  "/admin/procuring-entities": "Procuring Entities",
+  "/admin/duplicate-candidates": "Duplicate Candidates",
 };
 
 export function AdminTopbar() {

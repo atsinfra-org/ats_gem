@@ -134,7 +134,11 @@ to the real table instead of a hard-coded empty array.
 
 **Accept when:** the same PDF attached to two tenders is stored once; a scanned PDF goes through OCR and becomes searchable; download URLs expire; oversized/incorrect-type files are rejected and marked `QUARANTINED`.
 
-## Phase 7 — User features
+## Phase 7 — Search & discovery (delivered); user features (open, re-numbered)
+**Delivered:** the search & discovery system - ARCHITECTURE Sec 20, API-CONTRACT Sec 5.3, DATABASE (search tables and indexes). The user-features work below (follows, alerts, digests, bids) was not part of it and remains open.
+
+### User features (open; the notification/alert part was delivered as Phase 8 - ARCHITECTURE Sec 21)
+*Delivered in Phase 8:* alerts and matching for saved searches, saved-tender updates, deadline reminders, corrigendum alerts, notification preferences, e-mail delivery over the queue (log provider), daily digests, in-app notification center. *Still open:* follows, SMS/WhatsApp/push channels, a real e-mail provider, SSE stream, bids tracker.
 *(Watchlist, saved searches and the base `notifications` table/CRUD landed in Phase 2 — see
 ARCHITECTURE §17.5 for exactly what "foundation" means there.)* Remaining: follows, alerts +
 matching engine (percolator + Postgres batch fallback), notification preferences, email/SMS/push
