@@ -4,6 +4,7 @@ import { GetStartedLink } from "@/components/solutions/get-started-link";
 
 export const metadata: Metadata = {
   title: "Solutions",
+  alternates: { canonical: "/solutions" },
   description: "Tailored tender intelligence solutions for MSMEs, contractors, enterprises and consultants.",
 };
 
@@ -12,25 +13,25 @@ const solutions = [
     icon: HardHat,
     title: "MSMEs",
     description: "Affordable access to verified tenders with simplified filters designed for small business owners.",
-    points: ["Curated tender recommendations", "Simple document checklists", "Priced for small teams"],
+    points: ["Keyword and filter search", "Requirements and timeline per tender", "Save what matters"],
   },
   {
     icon: Building2,
     title: "Contractors",
     description: "Track large-scale construction and infrastructure tenders across every state and department.",
-    points: ["Location-based alerts", "EMD & value filtering", "Bid tracking dashboard"],
+    points: ["State and category filters", "EMD & value filtering", "Saved tenders and searches"],
   },
   {
     icon: Landmark,
     title: "Enterprises",
     description: "Enterprise-grade data feeds and team collaboration tools for procurement departments.",
-    points: ["Multi-seat team access", "API access for integration", "Dedicated account manager"],
+    points: ["Multi-seat team access", "Organization members and viewers", "Role-based access"],
   },
   {
     icon: Briefcase,
     title: "Consultants",
     description: "Research and advise clients faster with comprehensive historical and market intelligence.",
-    points: ["Market trend reports", "Competitor tracking", "White-label reporting (Enterprise)"],
+    points: ["Structured tender details", "Document access", "Cross-source de-duplication"],
   },
 ];
 
@@ -39,7 +40,7 @@ export default function SolutionsPage() {
     <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-2xl text-center">
         <h1 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">Solutions for Every Business</h1>
-        <p className="mt-3 text-muted-foreground">Whichever stage your business is at, ATS Gem adapts to your workflow.</p>
+        <p className="mt-3 text-muted-foreground">Whichever stage your business is at, ATS GeM adapts to your workflow.</p>
       </div>
 
       <div className="mt-12 grid grid-cols-1 gap-6 lg:grid-cols-2">

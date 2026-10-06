@@ -5,11 +5,14 @@ import { Button } from "@/components/ui/button";
 import { TenderStatusBadge } from "@/components/tender/tender-status-badge";
 import { DeadlineBadge } from "@/components/tender/deadline-badge";
 import { SaveTenderButton } from "@/components/tender/save-tender-button";
-import type { Tender } from "@/lib/types";
-import { formatCompactINR, cn } from "@/lib/utils";
+import { MatchReasonBadge } from "@/components/search/match-reason";
+import type { TenderSummary } from "@/lib/api/types";
+import { formatMoney, cn } from "@/lib/utils";
 import { format } from "date-fns";
 
-export function TenderCard({ tender, view = "grid" }: { tender: Tender; view?: "grid" | "list" }) {
+export function TenderCard({ tender, view = "grid" }: { tender: TenderSummary; view?: "grid" | "list" }) {
+  const location = [tender.city, tender.state].filter(Boolean).join(", ") || "Location not specified";
+
   return (
     <Card
       className={cn(
@@ -21,9 +24,8 @@ export function TenderCard({ tender, view = "grid" }: { tender: Tender; view?: "
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-mono">{tender.tenderId}</span>
-            <span>·</span>
-            <span>{tender.tenderType}</span>
+            {tender.referenceNumber && <span className="font-mono">{tender.referenceNumber}</span>}
+            <MatchReasonBadge reason={tender.matchReason} />
           </div>
           <TenderStatusBadge status={tender.status} />
         </div>
@@ -37,28 +39,28 @@ export function TenderCard({ tender, view = "grid" }: { tender: Tender; view?: "
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-sm text-muted-foreground">
           <div className="flex items-center gap-1.5 min-w-0">
             <Building2 className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{tender.department}</span>
+            <span className="truncate">{tender.procuringEntity?.name ?? tender.department ?? "Not specified"}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <MapPin className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{tender.location}, {tender.state}</span>
+            <span className="truncate">{location}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <IndianRupee className="h-3.5 w-3.5 shrink-0" />
-            <span>Value: {formatCompactINR(tender.estimatedValue)}</span>
+            <span>Value: {formatMoney(tender.estimatedValue)}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <Landmark className="h-3.5 w-3.5 shrink-0" />
-            <span>EMD: {formatCompactINR(tender.emdAmount)}</span>
+            <span>EMD: {formatMoney(tender.emdAmount)}</span>
           </div>
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="rounded-md bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
-            {tender.category}
-          </span>
+          {tender.category && (
+            <span className="rounded-md bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">{tender.category.name}</span>
+          )}
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Calendar className="h-3 w-3" /> Published {format(new Date(tender.publishedDate), "dd MMM yyyy")}
+            <Calendar className="h-3 w-3" /> Published {format(new Date(tender.publishedAt), "dd MMM yyyy")}
           </span>
         </div>
       </div>
@@ -69,7 +71,7 @@ export function TenderCard({ tender, view = "grid" }: { tender: Tender; view?: "
           view === "list" && "md:flex-col md:items-end md:border-l md:border-t-0 md:pl-4 md:min-w-[180px]"
         )}
       >
-        <DeadlineBadge date={tender.submissionDeadline} />
+        {tender.closingAt && <DeadlineBadge date={tender.closingAt} />}
         <div className="ml-auto flex items-center gap-2 md:ml-0 md:mt-2">
           <SaveTenderButton tenderId={tender.id} showLabel={false} size="icon" />
           <Button asChild size="sm">

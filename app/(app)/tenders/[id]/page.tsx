@@ -4,26 +4,42 @@ import type { Metadata } from "next";
 import { ChevronLeft } from "lucide-react";
 import { TenderStatusBadge } from "@/components/tender/tender-status-badge";
 import { TenderDetailActions } from "@/components/tender/tender-detail-actions";
+import { TenderAdminCorrection } from "@/components/tender/tender-admin-correction";
 import { TenderInformation } from "@/components/tender/tender-information";
 import { ImportantDates } from "@/components/tender/important-dates";
 import { TenderTabs } from "@/components/tender/tender-tabs";
-import { getTender, getSimilar } from "@/lib/api/tenders";
+import { TenderViewTracker } from "@/components/analytics/tender-view-tracker";
+import { Suspense } from "react";
+import { getTender } from "@/lib/api/tenders";
+import { ApiError } from "@/lib/api/client";
+
+async function loadTender(id: string) {
+  try {
+    return await getTender(id);
+  } catch (err) {
+    if (err instanceof ApiError && (err.code === "TENDER_NOT_FOUND" || err.code === "NOT_FOUND" || err.status === 404 || err.status === 400)) return null;
+    throw err;
+  }
+}
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
-  const tender = await getTender(id);
+  const tender = await loadTender(id);
   return { title: tender ? tender.title : "Tender Not Found" };
 }
 
 export default async function TenderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const tender = await getTender(id);
+  const tender = await loadTender(id);
   if (!tender) notFound();
 
-  const similar = await getSimilar(tender);
+  const location = [tender.city, tender.state].filter(Boolean).join(", ");
 
   return (
     <div className="space-y-6">
+      <Suspense fallback={null}>
+        <TenderViewTracker tenderId={id} />
+      </Suspense>
       <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm text-muted-foreground">
         <Link href="/tenders" className="inline-flex items-center gap-1 hover:text-foreground">
           <ChevronLeft className="h-3.5 w-3.5" /> Back to Search Results
@@ -34,17 +50,23 @@ export default async function TenderDetailPage({ params }: { params: Promise<{ i
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <TenderStatusBadge status={tender.status} />
-            <span className="font-mono text-xs text-muted-foreground">{tender.tenderId}</span>
+            {tender.referenceNumber && <span className="font-mono text-xs text-muted-foreground">{tender.referenceNumber}</span>}
           </div>
           <h1 className="mt-2 text-xl font-bold leading-snug text-foreground sm:text-2xl">{tender.title}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{tender.department} · {tender.location}, {tender.state}</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {tender.procuringEntity?.name ?? tender.department ?? "Procuring entity not specified"}
+            {location && ` · ${location}`}
+          </p>
         </div>
-        <TenderDetailActions tenderId={tender.id} />
+        <div className="flex flex-wrap items-center gap-2">
+          <TenderDetailActions tenderId={tender.id} />
+          <TenderAdminCorrection tenderId={tender.id} currentTitle={tender.title} />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
         <div className="min-w-0">
-          <TenderTabs tender={tender} similar={similar} />
+          <TenderTabs tender={tender} />
         </div>
         <div className="space-y-6">
           <ImportantDates tender={tender} />

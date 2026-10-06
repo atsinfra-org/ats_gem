@@ -1,0 +1,86 @@
+# Backend CI — verification only. Nothing here deploys, publishes images or touches any
+# environment; deployment pipelines are added separately once hosting is provisioned.
+name: backend-ci
+
+on:
+  push:
+    branches: [main, dev]
+    paths: ['backend/**', '.github/workflows/backend-ci.yml']
+  pull_request:
+    paths: ['backend/**', '.github/workflows/backend-ci.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ats_gem
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: ats_gem
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ats_gem -d ats_gem"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+
+    env:
+      # Throwaway credentials for the ephemeral service containers above — not secrets.
+      DATABASE_URL: postgresql://ats_gem:ci_only_password@localhost:5432/ats_gem?schema=public
+      TEST_DATABASE_URL: postgresql://ats_gem:ci_only_password@localhost:5432/ats_gem_test?schema=public
+      REDIS_URL: redis://localhost:6379/0
+      # Queue, scheduler and pipeline suites must run in CI, never silently skip.
+      REQUIRE_REDIS: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: backend/.nvmrc
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install (runs prisma generate)
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Apply migrations to a fresh database
+        run: npx prisma migrate deploy
+
+      - name: Migrations match schema.prisma (no drift)
+        run: npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
+
+      # The e2e global setup creates and migrates the separate *_test database itself.
+      - name: E2E tests (PostgreSQL + Redis)
+        run: npm run test:e2e
+
+      - name: Build
+        run: npm run build

@@ -1,0 +1,1542 @@
+// ATS GeM — Prisma schema.
+// Tables arrive phase by phase following docs/DATABASE.md. Every model here matches (or is an
+// additive subset of) the documented design; later phases extend them with additive migrations.
+// Postgres extensions are created in raw SQL migrations.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "cjs"
+  runtime             = "nodejs"
+  // Explicit, so generation never depends on whether a tsconfig.json is visible. Without it Prisma
+  // infers the extension from tsconfig and falls back to ".ts" when none is found (the Docker deps
+  // stage), which tsc then emits verbatim as require("./internal/class.ts").
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Platform ────────────────────────────────────────────────────────────────
+
+/// Admin-editable platform settings (key → JSON value).
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedBy String?  @map("updated_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("app_settings")
+}
+
+/// Transactional outbox. Rows are written in the same transaction as the domain change and
+/// relayed to BullMQ by the outbox relay (docs/ARCHITECTURE.md ADR-03).
+model OutboxEvent {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  eventType     String    @map("event_type")
+  aggregateType String    @map("aggregate_type")
+  aggregateId   String    @map("aggregate_id")
+  payload       Json
+  correlationId String?   @map("correlation_id")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Earliest time the relay may (re)try publishing; pushed forward with backoff on failure.
+  availableAt   DateTime  @default(now()) @map("available_at") @db.Timestamptz(6)
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
+  attempts      Int       @default(0)
+  lastError     String?   @map("last_error")
+
+  @@index([publishedAt, availableAt], map: "outbox_events_pending_idx")
+  @@index([aggregateType, aggregateId])
+  @@map("outbox_events")
+}
+
+/// Platform schedules (cleanup, health checks, re-indexing, …). Source crawl schedules live on
+/// tender_sources. The scheduler reconciles both into BullMQ job schedulers.
+model JobSchedule {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  key         String   @unique
+  queue       String
+  jobName     String   @map("job_name")
+  /// Exactly one of cron / every_ms is set (CHECK constraint in the migration).
+  cron        String?
+  everyMs     Int?     @map("every_ms")
+  timezone    String   @default("Asia/Kolkata")
+  payload     Json     @default("{}")
+  enabled     Boolean  @default(true)
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("job_schedules")
+}
+
+// ─── Sources & crawling ─────────────────────────────────────────────────────
+
+enum SourceType {
+  GOVT_PORTAL
+  PSU
+  STATE_PORTAL
+  PRIVATE
+  AGGREGATOR
+  MOCK
+
+  @@map("source_type")
+}
+
+enum SourceHealthStatus {
+  UNKNOWN
+  HEALTHY
+  DEGRADED
+  AUTH_REQUIRED
+  NEEDS_MANUAL_ACTION
+  DISABLED
+
+  @@map("source_health_status")
+}
+
+enum CrawlTrigger {
+  SCHEDULE
+  MANUAL
+  RETRY
+
+  @@map("crawl_trigger")
+}
+
+enum CrawlRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  RETRYING
+  CANCELLED
+
+  @@map("crawl_run_status")
+}
+
+model TenderSource {
+  id                     String             @id @default(uuid(7)) @db.Uuid
+  name                   String
+  /// Slugs are never reused, even after soft deletion.
+  slug                   String             @unique
+  websiteUrl             String?            @map("website_url")
+  description            String?
+  sourceType             SourceType         @map("source_type")
+  /// Key of the crawler adapter implementation (e.g. "mock").
+  adapterKey             String             @map("adapter_key")
+  authenticationRequired Boolean            @default(false) @map("authentication_required")
+  isActive               Boolean            @default(true) @map("is_active")
+  crawlEnabled           Boolean            @default(false) @map("crawl_enabled")
+  /// Cron expression evaluated in crawl_timezone; null = manual only.
+  crawlSchedule          String?            @map("crawl_schedule")
+  crawlTimezone          String             @default("Asia/Kolkata") @map("crawl_timezone")
+  /// Rate limits, retry policy and adapter-specific settings. Never contains credentials.
+  crawlConfig            Json               @default("{}") @map("crawl_config")
+  healthStatus           SourceHealthStatus @default(UNKNOWN) @map("health_status")
+  healthCheckedAt        DateTime?          @map("health_checked_at") @db.Timestamptz(6)
+  lastSuccessfulRunAt    DateTime?          @map("last_successful_run_at") @db.Timestamptz(6)
+  lastFailedRunAt        DateTime?          @map("last_failed_run_at") @db.Timestamptz(6)
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt              DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  deletedBy              String?            @map("deleted_by") @db.Uuid
+
+  crawlRuns      CrawlRun[]
+  sourceRecords  TenderSourceRecord[]
+  entityMappings SourceEntityMapping[]
+  corrigenda     TenderCorrigendum[]
+
+  @@map("tender_sources")
+}
+
+model CrawlRun {
+  id             String         @id @default(uuid(7)) @db.Uuid
+  sourceId       String         @map("source_id") @db.Uuid
+  trigger        CrawlTrigger
+  triggeredBy    String?        @map("triggered_by") @db.Uuid
+  status         CrawlRunStatus @default(QUEUED)
+  jobId          String?        @map("job_id")
+  correlationId  String?        @map("correlation_id")
+  startedAt      DateTime?      @map("started_at") @db.Timestamptz(6)
+  completedAt    DateTime?      @map("completed_at") @db.Timestamptz(6)
+  durationMs     Int?           @map("duration_ms")
+  recordsFound   Int            @default(0) @map("records_found")
+  recordsCreated Int            @default(0) @map("records_created")
+  recordsUpdated Int            @default(0) @map("records_updated")
+  recordsSkipped Int            @default(0) @map("records_skipped")
+  documentsFound Int            @default(0) @map("documents_found")
+  errorCount     Int            @default(0) @map("error_count")
+  failureReason  String?        @map("failure_reason")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  source TenderSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+
+  @@index([sourceId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("crawl_runs")
+}
+
+// ─── Tenders (Phase 1 ingestion subset + Phase 2 optional taxonomy; Phase 3 adds ─
+// procuring_entity_id, cross-source dedupe and required-field rules) ────────────
+
+enum TenderLifecycle {
+  ACTIVE
+  CANCELLED
+  AWARDED
+  ARCHIVED
+
+  @@map("tender_lifecycle")
+}
+
+enum TenderStatus {
+  UPCOMING
+  OPEN
+  CLOSING_SOON
+  CLOSED
+  CANCELLED
+  AWARDED
+  ARCHIVED
+
+  @@map("tender_status")
+}
+
+model Tender {
+  id                        String           @id @default(uuid(7)) @db.Uuid
+  /// Stable public identifier for URLs. Nullable: the crawler does not assign one; Phase 3/4
+  /// backfills slugs as part of search/detail-page work. Unique only among non-null values.
+  slug                      String?          @unique
+  referenceNumber           String?          @map("reference_number")
+  referenceNumberNormalized String?          @map("reference_number_normalized")
+  title                     String
+  description               String?
+  /// Issuing department/organization exactly as published by the source. Never overwritten by
+  /// normalization — `procuringEntityId` is the resolved canonical entity (Phase 3), this stays raw.
+  department                String?
+  /// Resolved canonical issuer (Phase 3). Nullable: resolution runs during ingestion but a tender
+  /// can exist before/without it (e.g. `department` was empty at the source).
+  procuringEntityId         String?          @map("procuring_entity_id") @db.Uuid
+  /// The source's own status/stage text, exactly as published (e.g. "Live", "Corrigendum Issued").
+  /// `lifecycle` above is the normalized value `SourceStatusNormalizer` maps this to (Phase 3).
+  sourceStatusRaw           String?          @map("source_status_raw")
+  /// Set when this tender is confirmed (auto or by review) to be the same real-world tender as
+  /// another, already-canonical one; this row is kept (never deleted) and archived, not merged away.
+  duplicateOfId             String?          @map("duplicate_of_id") @db.Uuid
+  /// Two-letter state/UT code. Still no FK to `states` in Phase 3 either — see docs/ARCHITECTURE.md
+  /// §18 for why (the crawler writes it; wiring the FK would make ingestion order-dependent on seeding).
+  stateCode                 String?          @map("state_code") @db.Char(2)
+  /// Optional normalized district; the crawler does not populate this yet (Phase 3/4 classification).
+  districtId                String?          @map("district_id") @db.Uuid
+  city                      String?
+  locationText              String?          @map("location_text")
+  /// Optional taxonomy; nullable because nothing classifies tenders into categories yet
+  /// (Phase 4 is explicitly out of scope for automated/AI classification).
+  categoryId                String?          @map("category_id") @db.Uuid
+  subCategoryId             String?          @map("sub_category_id") @db.Uuid
+  tenderTypeKey             String?          @map("tender_type_key")
+  procurementType           ProcurementType? @map("procurement_type")
+  estimatedValue            Decimal?         @map("estimated_value") @db.Decimal(18, 2)
+  emdAmount                 Decimal?         @map("emd_amount") @db.Decimal(18, 2)
+  tenderFee                 Decimal?         @map("tender_fee") @db.Decimal(18, 2)
+  currency                  String           @default("INR") @db.Char(3)
+  publishedAt               DateTime         @map("published_at") @db.Timestamptz(6)
+  closingAt                 DateTime?        @map("closing_at") @db.Timestamptz(6)
+  openingAt                 DateTime?        @map("opening_at") @db.Timestamptz(6)
+  lifecycle                 TenderLifecycle  @default(ACTIVE)
+  status                    TenderStatus
+  statusComputedAt          DateTime         @map("status_computed_at") @db.Timestamptz(6)
+  /// Moderation flag, set by staff (admin API arrives in Phase 9); never set by the crawler.
+  isFlagged                 Boolean          @default(false) @map("is_flagged")
+  flagReason                String?          @map("flag_reason")
+  primarySourceUrl          String?          @map("primary_source_url")
+  lastSyncedAt              DateTime         @map("last_synced_at") @db.Timestamptz(6)
+  createdAt                 DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt                 DateTime?        @map("deleted_at") @db.Timestamptz(6)
+  deletedBy                 String?          @map("deleted_by") @db.Uuid
+
+  district        District?        @relation(fields: [districtId], references: [id], onDelete: SetNull)
+  category        Category?        @relation("TenderCategory", fields: [categoryId], references: [id], onDelete: SetNull)
+  subCategory     Category?        @relation("TenderSubCategory", fields: [subCategoryId], references: [id], onDelete: SetNull)
+  tenderType      TenderType?      @relation(fields: [tenderTypeKey], references: [key], onDelete: SetNull)
+  procuringEntity ProcuringEntity? @relation(fields: [procuringEntityId], references: [id], onDelete: SetNull)
+  duplicateOf     Tender?          @relation("TenderDuplicate", fields: [duplicateOfId], references: [id], onDelete: SetNull)
+  duplicates      Tender[]         @relation("TenderDuplicate")
+
+  sourceRecords          TenderSourceRecord[]
+  documents              TenderDocument[]
+  watchlistItems         WatchlistItem[]
+  versions               TenderVersion[]
+  qualityIssues          TenderQualityIssue[]
+  duplicateCandidatesAsA DuplicateCandidate[]     @relation("DuplicateCandidateTender")
+  duplicateCandidatesAsB DuplicateCandidate[]     @relation("DuplicateCandidateOf")
+  /// Phase 7: weighted full-text vector, maintained by a DB trigger (see migration phase7_search) and
+  /// rebuilt by `search:reindex`. Never written by application code.
+  searchVector           Unsupported("tsvector")? @map("search_vector")
+  requirements           TenderRequirement[]
+  events                 TenderEvent[]
+  corrigenda             TenderCorrigendum[]
+
+  @@index([status, closingAt])
+  @@index([publishedAt(sort: Desc)])
+  @@index([referenceNumberNormalized])
+  @@index([categoryId])
+  @@index([districtId])
+  @@index([procuringEntityId])
+  /// Backs DeduplicationEngine's trigram title-similarity queries (docs/ARCHITECTURE.md Sec 6.5).
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "tenders_title_trgm_idx")
+  @@index([searchVector], type: Gin, map: "tenders_search_vector_gin_idx")
+  @@index([referenceNumberNormalized(ops: raw("gin_trgm_ops"))], type: Gin, map: "tenders_reference_norm_trgm_idx")
+  @@index([stateCode, publishedAt(sort: Desc), id(sort: Desc)], map: "tenders_state_published_idx")
+  @@index([closingAt], map: "tenders_closing_at_idx")
+  @@index([openingAt], map: "tenders_opening_at_idx")
+  @@index([estimatedValue], map: "tenders_estimated_value_idx")
+  @@index([emdAmount], map: "tenders_emd_amount_idx")
+  @@index([tenderFee], map: "tenders_tender_fee_idx")
+  @@index([tenderTypeKey], map: "tenders_tender_type_key_idx")
+  @@map("tenders")
+}
+
+enum ProcurementType {
+  GOODS
+  WORKS
+  SERVICES
+  CONSULTANCY
+
+  @@map("procurement_type")
+}
+
+/// One row per (source, external id). The deterministic dedupe key for ingestion.
+model TenderSourceRecord {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenderId          String   @map("tender_id") @db.Uuid
+  sourceId          String   @map("source_id") @db.Uuid
+  externalTenderId  String   @map("external_tender_id")
+  sourceUrl         String?  @map("source_url")
+  /// SHA-256 of the canonical normalized payload; unchanged hash → no update, no event.
+  payloadHash       String   @map("payload_hash") @db.Char(64)
+  rawPayload        Json     @map("raw_payload")
+  normalizedPayload Json     @map("normalized_payload")
+  firstSeenAt       DateTime @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt        DateTime @map("last_seen_at") @db.Timestamptz(6)
+  lastChangedAt     DateTime @map("last_changed_at") @db.Timestamptz(6)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tender Tender       @relation(fields: [tenderId], references: [id], onDelete: Restrict)
+  source TenderSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+
+  @@unique([sourceId, externalTenderId])
+  @@index([tenderId])
+  @@index([sourceId, tenderId], map: "tender_source_records_source_tender_idx")
+  @@map("tender_source_records")
+}
+
+// ─── Identity & access (Phase 2) ────────────────────────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING
+
+  @@map("user_status")
+}
+
+enum AuthProvider {
+  GOOGLE
+
+  @@map("auth_provider")
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+  ORG_INVITE
+
+  @@map("auth_token_type")
+}
+
+/// A person. Every user gets a personal workspace organization on registration (ADR-06); staff
+/// permissions come from `user_roles`, never from a flag on this row (ADR-07).
+/// Email uniqueness is a plain unique index, not partial on `deleted_at IS NULL`: Prisma/our
+/// migrations do not yet express partial unique indexes (docs/DATABASE.md §10; same trade-off as
+/// `tender_sources.slug` in Phase 1) — a soft-deleted account's email cannot be reused until then.
+model User {
+  id              String     @id @default(uuid(7)) @db.Uuid
+  email           String     @unique @db.Citext
+  /// Null for accounts that only ever signed in with Google.
+  passwordHash    String?    @map("password_hash")
+  name            String
+  phone           String?
+  designation     String?
+  avatarUrl       String?    @map("avatar_url")
+  isEmailVerified Boolean    @default(false) @map("is_email_verified")
+  isPhoneVerified Boolean    @default(false) @map("is_phone_verified")
+  termsAcceptedAt DateTime?  @map("terms_accepted_at") @db.Timestamptz(6)
+  termsVersion    String?    @map("terms_version")
+  status          UserStatus @default(ACTIVE)
+  lastLoginAt     DateTime?  @map("last_login_at") @db.Timestamptz(6)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt       DateTime?  @map("deleted_at") @db.Timestamptz(6)
+  deletedBy       String?    @map("deleted_by") @db.Uuid
+
+  identities              UserIdentity[]
+  sessions                Session[]
+  authTokens              AuthToken[]
+  userRoles               UserRole[]
+  organizationMemberships OrganizationMember[]
+  invitationsSent         OrganizationInvitation[] @relation("OrganizationInvitationInvitedBy")
+  savedSearches           SavedSearch[]
+  watchlistItems          WatchlistItem[]
+  searchHistory           SearchHistory[]
+  notifications           Notification[]
+  notificationPreferences NotificationPreference[]
+  notificationSettings    NotificationSettings?
+  notificationDeliveries  NotificationDelivery[]
+  analyticsSessions       AnalyticsSession[]
+  auditLogsAsActor        AuditLog[]               @relation("AuditLogActor")
+
+  @@index([status])
+  @@map("users")
+}
+
+/// Links a user to a third-party identity provider (currently Google only). A user may exist
+/// with no rows here (password-only) or no `passwordHash` (provider-only).
+model UserIdentity {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
+  provider       AuthProvider
+  providerUserId String       @map("provider_user_id")
+  email          String
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("user_identities")
+}
+
+/// One row per issued refresh token (ADR-11): opaque, hashed, rotated on every use. `familyId`
+/// links a lineage of rotations; presenting an already-rotated (revoked) token again is reuse —
+/// the whole family is revoked. Access tokens are short-lived JWTs and are never stored.
+model Session {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  familyId         String    @map("family_id") @db.Uuid
+  refreshTokenHash String    @map("refresh_token_hash") @db.Char(64)
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(6)
+  /// LOGOUT | ROTATED | REUSE_DETECTED | PASSWORD_RESET | ADMIN_REVOKED — checked in code, not the
+  /// DB, so new reasons never need a migration.
+  revokedReason    String?   @map("revoked_reason")
+  replacedById     String?   @map("replaced_by_id") @db.Uuid
+  ip               String?   @db.Inet
+  userAgent        String?   @map("user_agent")
+  deviceLabel      String?   @map("device_label")
+  lastUsedAt       DateTime  @default(now()) @map("last_used_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([refreshTokenHash])
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@map("sessions")
+}
+
+/// Single-use, hashed, expiring tokens for email verification, password reset and organization
+/// invitations that need a user-facing auth flow. Raw tokens are never stored, only their hash.
+model AuthToken {
+  id        String        @id @default(uuid(7)) @db.Uuid
+  userId    String        @map("user_id") @db.Uuid
+  type      AuthTokenType
+  tokenHash String        @map("token_hash") @db.Char(64)
+  expiresAt DateTime      @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime?     @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tokenHash])
+  @@index([userId, type])
+  @@map("auth_tokens")
+}
+
+/// Staff/platform roles (ADR-07): SUPER_ADMIN, ADMIN, MODERATOR, CRAWLER_MANAGER, SUPPORT.
+/// Ordinary customers hold none — their access comes only from `organization_members.role` plus
+/// their organization's subscription entitlements (Phase 8), never from a role here.
+model Role {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  key       String   @unique
+  name      String
+  isSystem  Boolean  @default(true) @map("is_system")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@map("roles")
+}
+
+/// Permissions are data, not code (`tender.update`, ...), so granting a new one to a role never
+/// needs a deploy. `PermissionsGuard` / `@RequirePermissions` check membership in this table.
+model Permission {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  key         String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId    String   @map("user_id") @db.Uuid
+  roleId    String   @map("role_id") @db.Uuid
+  grantedBy String?  @map("granted_by") @db.Uuid
+  grantedAt DateTime @default(now()) @map("granted_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+// ─── Customer organizations (Phase 2) ───────────────────────────────────────
+
+/// Organization roles (ADR-07) — a separate axis from staff roles above: OWNER (members, billing,
+/// settings), MEMBER (full product use), VIEWER (read-only). Ordering for authorization checks is
+/// OWNER > MEMBER > VIEWER (see `rbac/roles.constants.ts`).
+enum OrganizationRole {
+  OWNER
+  MEMBER
+  VIEWER
+
+  @@map("organization_role")
+}
+
+/// A customer workspace. Every user gets exactly one personal organization (`isPersonal = true`,
+/// created at registration); additional team organizations are created explicitly. Subscriptions,
+/// saved searches and usage attach here, never to a user directly (ADR-06).
+/// `slug` and `gstin` uniqueness are plain (non-partial) unique indexes — same documented
+/// trade-off as `User.email` above.
+model Organization {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  name          String
+  slug          String    @unique
+  isPersonal    Boolean   @default(false) @map("is_personal")
+  gstin         String?
+  pan           String?
+  industry      String?
+  companySize   String?   @map("company_size")
+  address       String?
+  stateCode     String?   @map("state_code") @db.Char(2)
+  city          String?
+  website       String?
+  contactPerson String?   @map("contact_person")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy     String?   @map("deleted_by") @db.Uuid
+
+  members       OrganizationMember[]
+  invitations   OrganizationInvitation[]
+  savedSearches SavedSearch[]
+  notifications Notification[]
+
+  @@unique([gstin])
+  @@map("organizations")
+}
+
+/// Membership + role for one (organization, user) pair. "Exactly one OWNER per organization" is
+/// enforced in `OrganizationsService`, not a DB constraint (would need a partial unique index —
+/// see the note on `User.email`).
+model OrganizationMember {
+  organizationId String           @map("organization_id") @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  role           OrganizationRole
+  joinedAt       DateTime         @default(now()) @map("joined_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+/// A pending (or resolved) invitation to join an organization. "One pending invite per
+/// (organization, email)" is enforced in `OrganizationsService` (see the note above).
+model OrganizationInvitation {
+  id             String           @id @default(uuid(7)) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  email          String           @db.Citext
+  role           OrganizationRole
+  tokenHash      String           @map("token_hash") @db.Char(64)
+  invitedBy      String           @map("invited_by") @db.Uuid
+  expiresAt      DateTime         @map("expires_at") @db.Timestamptz(6)
+  acceptedAt     DateTime?        @map("accepted_at") @db.Timestamptz(6)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  inviter      User         @relation("OrganizationInvitationInvitedBy", fields: [invitedBy], references: [id], onDelete: Cascade)
+
+  @@unique([tokenHash])
+  @@index([organizationId, email])
+  @@map("organization_invitations")
+}
+
+// ─── Taxonomy & reference data (Phase 2) ────────────────────────────────────
+
+enum StateType {
+  STATE
+  UT
+
+  @@map("state_type")
+}
+
+/// 28 states + 8 union territories, codes matching the frontend map and the crawler's
+/// normalization (`crawler/normalization/india-states.ts`). Seeded once; rarely changes.
+/// `tenders.state_code` deliberately has no FK here yet (same reason as Phase 1: the crawler
+/// writes it before this table existed, and Phase 3 is where it becomes a real relation).
+model State {
+  code String    @id @db.Char(2)
+  name String
+  type StateType
+
+  districts District[]
+
+  @@map("states")
+}
+
+model District {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  stateCode String  @map("state_code") @db.Char(2)
+  name      String
+  lgdCode   String? @map("lgd_code")
+
+  state             State             @relation(fields: [stateCode], references: [code], onDelete: Restrict)
+  tenders           Tender[]
+  procuringEntities ProcuringEntity[]
+
+  @@unique([stateCode, name])
+  @@map("districts")
+}
+
+/// Two-level category tree (category -> sub-category via self-relation). Open-ended, so this is a
+/// lookup table, not an enum (docs/DATABASE.md conventions).
+model Category {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  parentId  String?  @map("parent_id") @db.Uuid
+  slug      String   @unique
+  name      String
+  industry  String?
+  sortOrder Int      @default(0) @map("sort_order")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  parent   Category?  @relation("CategoryChildren", fields: [parentId], references: [id], onDelete: Restrict)
+  children Category[] @relation("CategoryChildren")
+
+  tendersAsCategory    Tender[] @relation("TenderCategory")
+  tendersAsSubCategory Tender[] @relation("TenderSubCategory")
+
+  @@index([parentId])
+  @@map("categories")
+}
+
+/// Small, closed lookup (OPEN, LIMITED, EOI, RFP, SINGLE, GLOBAL) - a table rather than an enum
+/// because `tenders.tender_type_key` needs to reference it as a nullable foreign key.
+model TenderType {
+  key  String @id
+  name String
+
+  tenders Tender[]
+
+  @@map("tender_types")
+}
+
+// ─── Document metadata foundation (Phase 2; download/extraction pipeline is Phase 6) ───────────
+
+enum StorageProvider {
+  LOCAL
+  S3
+
+  @@map("storage_provider")
+}
+
+enum TenderDocumentType {
+  NIT
+  TENDER_DOCUMENT
+  BOQ
+  CORRIGENDUM
+  TECHNICAL_SPEC
+  ELIGIBILITY
+  ADDENDUM
+  TERMS
+  DRAWING
+  OTHER
+
+  @@map("tender_document_type")
+}
+
+enum TenderDocumentStatus {
+  PENDING
+  DOWNLOADED
+  PROCESSING
+  PROCESSED
+  FAILED
+  QUARANTINED
+
+  @@map("tender_document_status")
+}
+
+/// Content-addressed file metadata (ADR-10): one row per distinct file, regardless of how many
+/// tenders reference it. No bytes live in Postgres - `storageKey` points at the object storage
+/// driver configured by `STORAGE_DRIVER`. Nothing writes to this table yet; it is pure foundation
+/// until the Phase 6 download pipeline exists.
+model StoredFile {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  checksumSha256  String          @map("checksum_sha256") @db.Char(64)
+  storageProvider StorageProvider @map("storage_provider")
+  bucket          String?
+  storageKey      String          @map("storage_key")
+  mimeType        String          @map("mime_type")
+  fileSize        BigInt          @map("file_size")
+  originalName    String?         @map("original_name")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenderDocuments TenderDocument[]
+
+  @@unique([checksumSha256])
+  @@map("stored_files")
+}
+
+/// Metadata for one document version attached to a tender. Foundation only: nothing populates
+/// this table yet (the crawler's `fetchDocuments` is a stub until Phase 6), but the shape is final.
+model TenderDocument {
+  id               String               @id @default(uuid(7)) @db.Uuid
+  tenderId         String               @map("tender_id") @db.Uuid
+  fileId           String               @map("file_id") @db.Uuid
+  documentType     TenderDocumentType   @default(OTHER) @map("document_type")
+  fileName         String               @map("file_name")
+  version          Int                  @default(1)
+  /// Points at the TenderDocument this one replaces (e.g. a corrigendum). Not a Prisma relation -
+  /// nothing queries it yet, and a self-relation is not worth the complexity until something does.
+  supersedesId     String?              @map("supersedes_id") @db.Uuid
+  sourceUrl        String?              @map("source_url")
+  sourceRecordId   String?              @map("source_record_id") @db.Uuid
+  /// The source portal's own identifier for this document (e.g. "document_id=12345"), independent
+  /// of `sourceUrl` - a source may change its URL scheme while keeping the same document ID, or vice
+  /// versa (docs/ARCHITECTURE.md Sec 19). Not unique alone: scoped per source via `sourceRecordId`.
+  sourceDocumentId String?              @map("source_document_id")
+  downloadedAt     DateTime?            @map("downloaded_at") @db.Timestamptz(6)
+  processedAt      DateTime?            @map("processed_at") @db.Timestamptz(6)
+  status           TenderDocumentStatus @default(PENDING)
+  failureReason    String?              @map("failure_reason")
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt        DateTime?            @map("deleted_at") @db.Timestamptz(6)
+  deletedBy        String?              @map("deleted_by") @db.Uuid
+
+  tender     Tender              @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  storedFile StoredFile          @relation(fields: [fileId], references: [id], onDelete: Restrict)
+  corrigenda TenderCorrigendum[]
+
+  @@unique([tenderId, fileId])
+  @@index([tenderId, documentType])
+  @@index([status])
+  @@map("tender_documents")
+}
+
+// ─── Tender requirements, timeline & corrigenda (Phase 4) ───────────────────
+
+enum RequirementType {
+  ELIGIBILITY
+  FINANCIAL
+  TECHNICAL
+  EXPERIENCE
+  LEGAL
+  REGISTRATION
+  DOCUMENTATION
+  LOCATION
+  PERSONNEL
+  EQUIPMENT
+  OTHER
+
+  @@map("requirement_type")
+}
+
+/// A single structured requirement extracted *manually or by an adapter* from a source (never by
+/// AI - Phase 4 is explicitly deterministic/structured only, docs/ARCHITECTURE.md Sec 19). Unknown
+/// stays unknown: nothing here is inferred from title/category, only recorded when the source states
+/// it. `value`/`unit` cover both money ("500000.00" / "INR") and non-money requirements
+/// ("3" / "years", "5" / "similar_projects") without needing a second numeric column.
+model TenderRequirement {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  tenderId        String          @map("tender_id") @db.Uuid
+  type            RequirementType
+  title           String
+  description     String?
+  value           Decimal?        @db.Decimal(18, 2)
+  unit            String?
+  isMandatory     Boolean         @default(true) @map("is_mandatory")
+  /// Free text pointing back at where this requirement came from (a clause, page, or section of the
+  /// source document) - not a foreign key, since the source text itself is rarely row-addressable.
+  sourceReference String?         @map("source_reference")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tender Tender @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  @@index([tenderId, type])
+  @@map("tender_requirements")
+}
+
+enum TenderEventType {
+  PUBLISHED
+  DOCUMENT_AVAILABLE
+  CLARIFICATION_OPENED
+  PRE_BID_MEETING
+  CLARIFICATION_CLOSED
+  SUBMISSION_OPENED
+  SUBMISSION_DEADLINE
+  OPENING
+  EXTENDED
+  CORRIGENDUM
+  CANCELLED
+  AWARDED
+  OTHER
+
+  @@map("tender_event_type")
+}
+
+/// Normalized, auditable timeline (docs/ARCHITECTURE.md Sec 19). Deliberately does not duplicate
+/// `tenders.published_at`/`closing_at` etc. as authoritative values - those columns stay the source
+/// of truth for filtering/sorting; a matching event row is a human-readable historical entry
+/// (e.g. so an extension shows as both a new `closing_at` *and* an `EXTENDED` event with the old and
+/// new dates in its description). `eventAt` is nullable: a source can state that a pre-bid meeting
+/// happened without ever giving an exact timestamp, and that must not block recording the event.
+model TenderEvent {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  tenderId        String          @map("tender_id") @db.Uuid
+  eventType       TenderEventType @map("event_type")
+  eventAt         DateTime?       @map("event_at") @db.Timestamptz(6)
+  title           String?
+  description     String?
+  sourceReference String?         @map("source_reference")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tender Tender @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  @@unique([tenderId, eventType, eventAt])
+  @@index([tenderId, eventAt])
+  @@map("tender_events")
+}
+
+/// A recorded change notice (docs/ARCHITECTURE.md Sec 19). Distinct from `TenderVersion` (Phase 3):
+/// a `TenderVersion` is *what changed* on the canonical row, written automatically by ingestion; a
+/// `TenderCorrigendum` is the source's own *notice* of a change (with its own title/description/
+/// document/URL), which may or may not end up changing a tracked column. Never reinterprets the
+/// corrigendum's free-form text - `affectedFields` is only populated when the source itself
+/// enumerates them structurally, otherwise left empty.
+model TenderCorrigendum {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  tenderId        String    @map("tender_id") @db.Uuid
+  sourceId        String?   @map("source_id") @db.Uuid
+  sourceReference String?   @map("source_reference")
+  title           String
+  description     String?
+  publishedAt     DateTime  @map("published_at") @db.Timestamptz(6)
+  effectiveAt     DateTime? @map("effective_at") @db.Timestamptz(6)
+  sourceUrl       String?   @map("source_url")
+  documentId      String?   @map("document_id") @db.Uuid
+  /// e.g. ["closingAt", "estimatedValue"] - only when the source structurally states what changed.
+  affectedFields  Json      @default("[]") @map("affected_fields")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tender   Tender          @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  source   TenderSource?   @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  document TenderDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([tenderId, publishedAt])
+  @@map("tender_corrigenda")
+}
+
+// ─── User features (Phase 2 foundation; alerts/digests/percolator matching are Phase 7) ────────
+
+/// Criteria are a free-form JSON blob rather than individual columns: the set of filterable tender
+/// fields grows with the search engine (Phase 4/5), and a saved search should not need a migration
+/// every time it does. `search/list-tenders.dto.ts` is the schema the criteria are validated against.
+model SavedSearch {
+  id             String                    @id @default(uuid(7)) @db.Uuid
+  organizationId String                    @map("organization_id") @db.Uuid
+  createdBy      String                    @map("created_by") @db.Uuid
+  name           String
+  criteria       Json                      @default("{}")
+  isActive       Boolean                   @default(true) @map("is_active")
+  /// Alerts are opt-in per saved search (Phase 8): OFF never notifies, IMMEDIATE notifies per matching new tender
+  /// (rate-capped, overflow folds into the digest), DAILY only sends the daily digest.
+  alertFrequency SavedSearchAlertFrequency @default(OFF) @map("alert_frequency")
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creator      User         @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([alertFrequency], map: "saved_searches_alerting_idx")
+  @@map("saved_searches")
+}
+
+/// A user's bookmarked tender ("watchlist" / "my bids" foundation). Ownership is per-user, not
+/// per-organization: a bookmark is a personal shortlist, unlike saved searches which a team shares.
+model WatchlistItem {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tenderId  String   @map("tender_id") @db.Uuid
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tender Tender @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenderId])
+  @@index([tenderId])
+  @@map("watchlist_items")
+}
+
+/// In-app notification record (Phase 8). `type` stays text (the set grows with features) but every writer goes
+/// through `notification-types.ts`, which is the closed list. `dedupKey` is deterministic per underlying event so a
+/// retried job, re-ingested tender or repeated request can never create a second notification for the same user.
+model Notification {
+  id              String               @id @default(uuid(7)) @db.Uuid
+  userId          String               @map("user_id") @db.Uuid
+  organizationId  String?              @map("organization_id") @db.Uuid
+  type            String
+  title           String
+  message         String
+  entityType      String?              @map("entity_type")
+  entityId        String?              @map("entity_id") @db.Uuid
+  priority        NotificationPriority @default(NORMAL)
+  /// Small, validated snapshot (tender title/reference/dates, changed fields...) - never free-form payloads.
+  metadata        Json                 @default("{}")
+  dedupKey        String?              @map("dedup_key")
+  /// Outbox event (or schedule slot) that produced it, for tracing.
+  sourceEventId   String?              @map("source_event_id")
+  templateKey     String?              @map("template_key")
+  templateVersion Int?                 @map("template_version")
+  isRead          Boolean              @default(false) @map("is_read")
+  readAt          DateTime?            @map("read_at") @db.Timestamptz(6)
+  /// Hidden from the UI after this time (rows are kept as history).
+  expiresAt       DateTime?            @map("expires_at") @db.Timestamptz(6)
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?          @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  deliveries   NotificationDelivery[]
+
+  @@unique([userId, dedupKey], map: "notifications_user_dedup_key")
+  @@index([userId, isRead, createdAt(sort: Desc)])
+  @@index([userId, type, createdAt(sort: Desc)], map: "notifications_user_type_idx")
+  @@index([organizationId], map: "notifications_organization_idx")
+  @@map("notifications")
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+
+  @@map("notification_priority")
+}
+
+enum SavedSearchAlertFrequency {
+  OFF
+  IMMEDIATE
+  DAILY
+
+  @@map("saved_search_alert_frequency")
+}
+
+enum NotificationCategory {
+  SAVED_SEARCH_ALERTS
+  SAVED_TENDER_UPDATES
+  DEADLINE_REMINDERS
+  CORRIGENDA
+  STATUS_CHANGES
+  SYSTEM
+
+  @@map("notification_category")
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+
+  @@map("notification_channel")
+}
+
+/// QUEUED -> SENDING -> SENT | RETRYING -> ... | FAILED. SENT means "accepted by the configured provider" (for the dev
+/// log driver: captured, not delivered - see provider). SKIPPED records why a channel was not used; DIGEST_PENDING /
+/// DIGESTED track alerts folded into a daily digest email.
+enum DeliveryStatus {
+  QUEUED
+  SENDING
+  SENT
+  RETRYING
+  FAILED
+  SKIPPED
+  DIGEST_PENDING
+  DIGESTED
+
+  @@map("delivery_status")
+}
+
+/// One row per (user, category, channel) the user has explicitly set; anything absent uses the documented defaults.
+model NotificationPreference {
+  id        String               @id @default(uuid(7)) @db.Uuid
+  userId    String               @map("user_id") @db.Uuid
+  category  NotificationCategory
+  channel   NotificationChannel
+  enabled   Boolean
+  updatedAt DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, category, channel])
+  @@map("notification_preferences")
+}
+
+/// Per-user delivery settings that are not a category toggle. One row per user, created on first save.
+model NotificationSettings {
+  userId               String   @id @map("user_id") @db.Uuid
+  /// Hours before closing at which a deadline reminder fires (subset of 168/72/24/3 in the UI).
+  deadlineOffsetsHours Int[]    @default([24]) @map("deadline_offsets_hours")
+  quietHoursEnabled    Boolean  @default(false) @map("quiet_hours_enabled")
+  quietStart           String?  @map("quiet_start") @db.VarChar(5)
+  quietEnd             String?  @map("quiet_end") @db.VarChar(5)
+  timezone             String   @default("Asia/Kolkata")
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_settings")
+}
+
+/// Email delivery tracking. Only channels that leave the platform get a row (in-app is the notification itself).
+/// Digest rows have no notification; the alerts they contain point at them through `digestId`.
+model NotificationDelivery {
+  id                String              @id @default(uuid(7)) @db.Uuid
+  userId            String              @map("user_id") @db.Uuid
+  notificationId    String?             @map("notification_id") @db.Uuid
+  digestId          String?             @map("digest_id") @db.Uuid
+  channel           NotificationChannel @default(EMAIL)
+  status            DeliveryStatus
+  templateKey       String              @map("template_key")
+  templateVersion   Int                 @map("template_version")
+  provider          String?
+  providerMessageId String?             @map("provider_message_id")
+  attempts          Int                 @default(0)
+  skipReason        String?             @map("skip_reason")
+  /// Sanitized failure description (no addresses, no message content).
+  lastError         String?             @map("last_error")
+  itemCount         Int?                @map("item_count")
+  queuedAt          DateTime?           @map("queued_at") @db.Timestamptz(6)
+  sentAt            DateTime?           @map("sent_at") @db.Timestamptz(6)
+  failedAt          DateTime?           @map("failed_at") @db.Timestamptz(6)
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notification Notification?          @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  digest       NotificationDelivery?  @relation("DigestMembers", fields: [digestId], references: [id], onDelete: SetNull)
+  members      NotificationDelivery[] @relation("DigestMembers")
+
+  @@unique([notificationId, channel], map: "notification_deliveries_notification_channel_key")
+  @@index([status, createdAt], map: "notification_deliveries_status_idx")
+  @@index([userId, createdAt(sort: Desc)], map: "notification_deliveries_user_idx")
+  @@index([userId, status], map: "notification_deliveries_user_status_idx")
+  @@index([digestId], map: "notification_deliveries_digest_idx")
+  @@map("notification_deliveries")
+}
+
+// ─── Audit logging (Phase 2) ─────────────────────────────────────────────────
+
+/// Append-only. The application never updates or deletes a row here; `AuditLogService` only
+/// exposes `record()` and read queries. `oldValue`/`newValue` must never contain a password,
+/// token, secret or credential - callers pass already-redacted snapshots.
+model AuditLog {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  actorUserId    String?  @map("actor_user_id") @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  action         String
+  resourceType   String   @map("resource_type")
+  resourceId     String?  @map("resource_id")
+  oldValue       Json?    @map("old_value")
+  newValue       Json?    @map("new_value")
+  ip             String?  @db.Inet
+  userAgent      String?  @map("user_agent")
+  requestId      String?  @map("request_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  actor User? @relation("AuditLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([resourceType, resourceId])
+  @@index([actorUserId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+// --- Procuring entities & source mapping (Phase 3; ADR-05) ------------------
+
+enum ProcuringEntityType {
+  CENTRAL_MINISTRY
+  STATE_DEPT
+  PSU
+  MUNICIPAL
+  AUTONOMOUS_BODY
+  UNIVERSITY
+  HOSPITAL
+  RAILWAYS
+  DEFENCE
+  PRIVATE
+  OTHER
+
+  @@map("procuring_entity_type")
+}
+
+enum ProcuringEntityStatus {
+  ACTIVE
+  INACTIVE
+  /// Set by an entity merge (see ProcuringEntity.mergedIntoId); the row is kept, never deleted.
+  MERGED
+
+  @@map("procuring_entity_status")
+}
+
+/// The canonical issuer of a tender (NHAI, a state PWD, a municipal corporation, ...) - ADR-05:
+/// distinct from `organizations` (customer accounts). One real-world entity may be spelled
+/// differently by every source that publishes its tenders; `SourceEntityMapping` and
+/// `ProcuringEntityAlias` link those spellings to exactly one row here.
+model ProcuringEntity {
+  id             String                @id @default(uuid(7)) @db.Uuid
+  name           String
+  /// Lower-cased, whitespace/punctuation-collapsed form of `name` - the exact-match resolution key.
+  nameNormalized String                @map("name_normalized")
+  shortName      String?               @map("short_name")
+  entityType     ProcuringEntityType   @map("entity_type")
+  parentId       String?               @map("parent_id") @db.Uuid
+  stateCode      String?               @map("state_code") @db.Char(2)
+  districtId     String?               @map("district_id") @db.Uuid
+  city           String?
+  website        String?
+  status         ProcuringEntityStatus @default(ACTIVE)
+  /// Set only when `status = MERGED`: the surviving entity this one now redirects to.
+  mergedIntoId   String?               @map("merged_into_id") @db.Uuid
+  metadata       Json                  @default("{}")
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  parent     ProcuringEntity?  @relation("ProcuringEntityParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children   ProcuringEntity[] @relation("ProcuringEntityParent")
+  mergedInto ProcuringEntity?  @relation("ProcuringEntityMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom ProcuringEntity[] @relation("ProcuringEntityMerge")
+  district   District?         @relation(fields: [districtId], references: [id], onDelete: SetNull)
+
+  aliases  ProcuringEntityAlias[]
+  mappings SourceEntityMapping[]
+  tenders  Tender[]
+
+  @@unique([nameNormalized, stateCode])
+  /// Backs EntityResolutionService's conservative same-state trigram fuzzy match (Sec 19 above).
+  @@index([nameNormalized(ops: raw("gin_trgm_ops"))], type: Gin, map: "procuring_entities_name_normalized_trgm_idx")
+  @@index([parentId])
+  @@index([mergedIntoId])
+  @@map("procuring_entities")
+}
+
+/// Admin-curated abbreviation/alias ("MoRTH" -> Ministry of Road Transport & Highways). Resolution
+/// checks this before ever attempting fuzzy matching (docs/ARCHITECTURE.md §19.3).
+model ProcuringEntityAlias {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  procuringEntityId String   @map("procuring_entity_id") @db.Uuid
+  alias             String
+  aliasNormalized   String   @map("alias_normalized")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  procuringEntity ProcuringEntity @relation(fields: [procuringEntityId], references: [id], onDelete: Cascade)
+
+  @@unique([aliasNormalized])
+  @@map("procuring_entity_aliases")
+}
+
+enum EntityMappingMethod {
+  /// This exact (source, raw name) pair was already mapped once; reused deterministically.
+  EXACT_SOURCE_MAPPING
+  /// The raw name's normalized form exactly matches an existing ProcuringEntity.
+  EXACT_NORMALIZED_NAME
+  /// Matched via a curated ProcuringEntityAlias row.
+  ALIAS
+  /// A single conservative trigram-similarity match within the same state (see EntityResolutionService).
+  FUZZY
+  /// Set by an admin action, not the resolver.
+  MANUAL
+
+  @@map("entity_mapping_method")
+}
+
+enum EntityVerificationStatus {
+  /// System-resolved (exact/alias/auto-created); not reviewed, but not uncertain either.
+  UNVERIFIED
+  VERIFIED
+  REJECTED
+
+  @@map("entity_verification_status")
+}
+
+/// One row per (source, raw entity name) ever seen. This is what makes entity resolution
+/// idempotent and auditable: re-processing the same raw name from the same source always returns
+/// the same mapping without recomputing it, and the `method`/`confidence` explain how it resolved.
+model SourceEntityMapping {
+  id                     String                   @id @default(uuid(7)) @db.Uuid
+  sourceId               String                   @map("source_id") @db.Uuid
+  sourceEntityName       String                   @map("source_entity_name")
+  sourceEntityNormalized String                   @map("source_entity_normalized")
+  procuringEntityId      String?                  @map("procuring_entity_id") @db.Uuid
+  confidence             Decimal                  @db.Decimal(4, 3)
+  method                 EntityMappingMethod
+  verificationStatus     EntityVerificationStatus @default(UNVERIFIED) @map("verification_status")
+  metadata               Json                     @default("{}")
+  createdAt              DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  source          TenderSource     @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  procuringEntity ProcuringEntity? @relation(fields: [procuringEntityId], references: [id], onDelete: SetNull)
+
+  @@unique([sourceId, sourceEntityNormalized])
+  @@index([procuringEntityId])
+  @@map("source_entity_mappings")
+}
+
+// --- Tender versioning (Phase 3) ---------------------------------------------
+
+enum TenderVersionChangeType {
+  INITIAL
+  UPDATE
+  CORRIGENDUM
+  CANCELLATION
+
+  @@map("tender_version_change_type")
+}
+
+/// One row per meaningful change to a tender after its first ingestion (docs/DATABASE.md §4).
+/// `version` 1 is written at creation (`changeType = INITIAL`); later rows record only the fields
+/// that changed, not a full snapshot, so this stays cheap even for a tender with many corrigenda.
+model TenderVersion {
+  id             String                  @id @default(uuid(7)) @db.Uuid
+  tenderId       String                  @map("tender_id") @db.Uuid
+  version        Int
+  changeType     TenderVersionChangeType @map("change_type")
+  /// `{ field: { from, to } }` for every changed field - never a full row snapshot.
+  diff           Json
+  sourceRecordId String?                 @map("source_record_id") @db.Uuid
+  detectedAt     DateTime                @default(now()) @map("detected_at") @db.Timestamptz(6)
+
+  tender Tender @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  @@unique([tenderId, version])
+  @@map("tender_versions")
+}
+
+// --- Cross-source deduplication (Phase 3; docs/ARCHITECTURE.md §6.5) --------
+
+enum DuplicateCandidateStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+  /// The engine linked them automatically (score >= the auto-link threshold) - still recorded here,
+  /// never silent, so "why are these considered duplicates" is always answerable.
+  AUTO_CONFIRMED
+
+  @@map("duplicate_candidate_status")
+}
+
+/// An explainable record of one deduplication decision between two tenders. `tenderId` is always
+/// the lower UUID of the pair (CHECK below) so the same pair can never be recorded twice in either
+/// order. Confirming one re-points `candidateTenderId`'s source records onto `tenderId` and
+/// archives it (`Tender.duplicateOfId`); nothing is ever deleted.
+model DuplicateCandidate {
+  id                String                   @id @default(uuid(7)) @db.Uuid
+  tenderId          String                   @map("tender_id") @db.Uuid
+  candidateTenderId String                   @map("candidate_tender_id") @db.Uuid
+  score             Decimal                  @db.Decimal(4, 3)
+  /// e.g. { method: "composite", matchedFields: ["procuringEntityId","referenceNumberNormalized"],
+  ///        titleSimilarity: 0.82, valueDeltaPct: 0.01, dateDeltaDays: 0 }
+  signals           Json
+  status            DuplicateCandidateStatus @default(PENDING)
+  reviewedBy        String?                  @map("reviewed_by") @db.Uuid
+  reviewedAt        DateTime?                @map("reviewed_at") @db.Timestamptz(6)
+  notes             String?
+  createdAt         DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tender          Tender @relation("DuplicateCandidateTender", fields: [tenderId], references: [id], onDelete: Cascade)
+  candidateTender Tender @relation("DuplicateCandidateOf", fields: [candidateTenderId], references: [id], onDelete: Cascade)
+
+  @@unique([tenderId, candidateTenderId])
+  @@index([status])
+  @@map("duplicate_candidates")
+}
+
+// --- Data quality (Phase 3) --------------------------------------------------
+
+enum DataQualitySeverity {
+  INFO
+  WARNING
+  ERROR
+
+  @@map("data_quality_severity")
+}
+
+/// A non-blocking data-quality finding from ingestion (docs/ARCHITECTURE.md §19.4). Recording an
+/// issue never rejects the source record - the tender is still ingested with whatever data it has.
+model TenderQualityIssue {
+  id             String              @id @default(uuid(7)) @db.Uuid
+  tenderId       String              @map("tender_id") @db.Uuid
+  sourceRecordId String?             @map("source_record_id") @db.Uuid
+  severity       DataQualitySeverity
+  /// Stable machine-readable code, e.g. "MISSING_REFERENCE_NUMBER", "DEADLINE_BEFORE_PUBLICATION".
+  code           String
+  message        String
+  detectedAt     DateTime            @default(now()) @map("detected_at") @db.Timestamptz(6)
+  resolvedAt     DateTime?           @map("resolved_at") @db.Timestamptz(6)
+
+  tender Tender @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  @@index([tenderId])
+  @@index([severity, resolvedAt])
+  @@map("tender_quality_issues")
+}
+
+// ─── Search & discovery (Phase 7) ───────────────────────────────────────────
+
+enum SearchEventType {
+  SEARCH_SUBMITTED
+  FILTER_APPLIED
+  FILTER_REMOVED
+  SORT_CHANGED
+  RESULT_OPENED
+  RESULT_SAVED
+  SEARCH_SAVED
+  SUGGESTION_SELECTED
+
+  @@map("search_event_type")
+}
+
+/// Per-user search history. Only authenticated users are recorded (anonymous searches are never
+/// stored). Deduplicated by (user, dedupKey = hash of normalized query + filters); repeated searches
+/// bump `searchCount`/`lastSearchedAt` instead of adding rows. Deleted with the user.
+model SearchHistory {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  organizationId  String?  @map("organization_id") @db.Uuid
+  queryNormalized String   @map("query_normalized")
+  filters         Json     @default("{}")
+  dedupKey        String   @map("dedup_key") @db.Char(64)
+  searchCount     Int      @default(1) @map("search_count")
+  firstSearchedAt DateTime @default(now()) @map("first_searched_at") @db.Timestamptz(6)
+  lastSearchedAt  DateTime @default(now()) @map("last_searched_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupKey])
+  @@index([userId, lastSearchedAt(sort: Desc)])
+  @@index([queryNormalized, lastSearchedAt])
+  @@map("search_history")
+}
+
+/// Append-only search analytics foundation (Phase 10 consumes it). No FK to users on purpose: events
+/// outlive an account; they hold only ids and normalized text, never credentials or tokens.
+/// Retention: purged daily beyond SEARCH_EVENT_RETENTION_DAYS (default 180) by maintenance.search-events-purge (docs/ARCHITECTURE.md Sec 20.13).
+model SearchEvent {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  eventType       SearchEventType @map("event_type")
+  userId          String?         @map("user_id") @db.Uuid
+  organizationId  String?         @map("organization_id") @db.Uuid
+  queryNormalized String?         @map("query_normalized")
+  payload         Json            @default("{}")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([eventType, createdAt])
+  @@index([createdAt])
+  @@map("search_events")
+}
+
+/// One row per reindex/verify run - the observable record behind `search:reindex` and search health.
+// ─── Analytics & tracking (Phase 10) ───────────────────────────────────────────
+
+/// Closed event taxonomy - every producer (frontend beacon or backend job) must use one of these.
+/// Search-specific events stay in `SearchEvent` (Phase 7); this enum deliberately does not repeat them.
+enum AnalyticsEventName {
+  PAGE_VIEW
+  REGISTRATION_STARTED
+  REGISTRATION_COMPLETED
+  EMAIL_VERIFICATION_COMPLETED
+  LOGIN_SUCCESS
+  LOGIN_FAILURE
+  LOGOUT
+  TENDER_VIEWED
+  TENDER_SAVED
+  TENDER_UNSAVED
+  TENDER_SOURCE_OPENED
+  TENDER_CORRIGENDUM_VIEWED
+  TENDER_VERSION_VIEWED
+  DOCUMENT_VIEWED
+  DOCUMENT_DOWNLOADED
+  DOCUMENT_DOWNLOAD_FAILED
+  NOTIFICATION_VIEWED
+  NOTIFICATION_CLICKED
+  NOTIFICATION_PREFERENCES_UPDATED
+  PROFILE_VIEWED
+  PROFILE_UPDATED
+  ORGANIZATION_VIEWED
+  CLIENT_ERROR
+  API_ERROR
+
+  @@map("analytics_event_name")
+}
+
+/// Append-only, high-volume event stream (docs/ARCHITECTURE.md Sec 22). Deliberately no FK to
+/// user/organization/tender: at this volume a foreign key makes both ingestion and retention
+/// (bulk delete) far more expensive for no query benefit - every real query filters by id anyway,
+/// and a dangling id after a hard user/tender delete is acceptable for a historical analytics row
+/// (same trade-off precedent as `search_events`). `sessionId` -> `analytics_sessions` is the one
+/// exception because sessions are Phase-10-owned and low volume by comparison.
+model AnalyticsEvent {
+  id             String             @id @default(uuid(7)) @db.Uuid
+  eventName      AnalyticsEventName @map("event_name")
+  /// Stable per-browser id (random, not derived from any PII); present for both anonymous and authenticated events.
+  anonymousId    String?            @map("anonymous_id")
+  sessionId      String?            @map("session_id") @db.Uuid
+  userId         String?            @map("user_id") @db.Uuid
+  organizationId String?            @map("organization_id") @db.Uuid
+  entityType     String?            @map("entity_type")
+  entityId       String?            @map("entity_id") @db.Uuid
+  /// Pathname only (no query string, no origin) - see AnalyticsIngestService for what is stripped.
+  path           String?
+  /// Closed, bounded, schema-validated per event name (see analytics-event-schemas.ts). Never a raw request body.
+  metadata       Json               @default("{}")
+  /// Client-reported event time, clamped to a small window around receivedAt so a forged value cannot skew rollups.
+  occurredAt     DateTime           @map("occurred_at") @db.Timestamptz(6)
+  receivedAt     DateTime           @default(now()) @map("received_at") @db.Timestamptz(6)
+  correlationId  String?            @map("correlation_id")
+
+  session AnalyticsSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([eventName, occurredAt], map: "analytics_events_name_time_idx")
+  @@index([organizationId, occurredAt], map: "analytics_events_org_time_idx")
+  @@index([userId, occurredAt], map: "analytics_events_user_time_idx")
+  @@index([sessionId], map: "analytics_events_session_idx")
+  @@index([receivedAt], map: "analytics_events_received_idx")
+  @@map("analytics_events")
+}
+
+/// Lightweight session: one row per anonymous browser (or signed-in user) between activity gaps of
+/// ANALYTICS_SESSION_TIMEOUT_MINUTES (default 30). First-touch UTM/referrer attribution only - see
+/// docs/ARCHITECTURE.md Sec 22.5 for why last-touch was not added.
+model AnalyticsSession {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  /// Not unique: an anonymous browser gets a new row each time its previous session timed out (see AnalyticsSessionService).
+  anonymousId    String    @map("anonymous_id")
+  userId         String?   @map("user_id") @db.Uuid
+  startedAt      DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  lastActivityAt DateTime  @default(now()) @map("last_activity_at") @db.Timestamptz(6)
+  endedAt        DateTime? @map("ended_at") @db.Timestamptz(6)
+  landingPath    String?   @map("landing_path")
+  /// Host only (e.g. "google.com"), never the full referrer URL - a full URL can itself carry PII/secrets.
+  referrerHost   String?   @map("referrer_host")
+  utmSource      String?   @map("utm_source")
+  utmMedium      String?   @map("utm_medium")
+  utmCampaign    String?   @map("utm_campaign")
+  utmTerm        String?   @map("utm_term")
+  utmContent     String?   @map("utm_content")
+  pageViewCount  Int       @default(0) @map("page_view_count")
+  eventCount     Int       @default(0) @map("event_count")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user   User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  events AnalyticsEvent[]
+
+  @@index([userId], map: "analytics_sessions_user_idx")
+  @@index([lastActivityAt], map: "analytics_sessions_last_activity_idx")
+  @@index([anonymousId, lastActivityAt(sort: Desc)], map: "analytics_sessions_anon_activity_idx")
+  @@map("analytics_sessions")
+}
+
+/// Deterministic daily counters (docs/ARCHITECTURE.md Sec 22.6), rebuilt idempotently from
+/// `analytics_events` + `search_events` by the nightly rollup job. `dimension` is "global" for
+/// platform-wide totals or an organization id for org-scoped metrics; never a free-form string from a client.
+model AnalyticsDailyRollup {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  date      DateTime @db.Date
+  metric    String
+  dimension String   @default("global")
+  count     Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([date, metric, dimension], map: "analytics_daily_rollups_key")
+  @@index([metric, date], map: "analytics_daily_rollups_metric_date_idx")
+  @@map("analytics_daily_rollups")
+}
+
+/// Observability for `analytics:rollup` / `analytics:purge-events` (mirrors `search_index_runs`).
+model AnalyticsProcessingRun {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  kind        String
+  status      String
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  processed   Int       @default(0)
+  failed      Int       @default(0)
+  details     Json      @default("{}")
+
+  @@index([startedAt(sort: Desc)], map: "analytics_processing_runs_started_idx")
+  @@map("analytics_processing_runs")
+}
+
+model SearchIndexRun {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  kind        String
+  status      String
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  processed   Int       @default(0)
+  failed      Int       @default(0)
+  details     Json      @default("{}")
+
+  @@index([startedAt(sort: Desc)])
+  @@map("search_index_runs")
+}

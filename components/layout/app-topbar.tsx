@@ -18,7 +18,7 @@ export function AppTopbar() {
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    router.push(`/tenders?keyword=${encodeURIComponent(query)}`);
+    router.push(query.trim() ? `/tenders?q=${encodeURIComponent(query.trim())}` : "/tenders");
   }
 
   return (

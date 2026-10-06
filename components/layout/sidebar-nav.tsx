@@ -7,13 +7,9 @@ import {
   Search,
   Bookmark,
   SlidersHorizontal,
-  BellRing,
   Bell,
-  Briefcase,
   UserCircle,
   Building2,
-  CreditCard,
-  Receipt,
   LifeBuoy,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,16 +20,12 @@ const mainNav = [
   { href: "/tenders", label: "Tender Search", icon: Search },
   { href: "/saved-tenders", label: "Saved Tenders", icon: Bookmark },
   { href: "/saved-searches", label: "Saved Searches", icon: SlidersHorizontal },
-  { href: "/alerts", label: "Tender Alerts", icon: BellRing },
-  { href: "/my-bids", label: "My Bids", icon: Briefcase },
   { href: "/notifications", label: "Notifications", icon: Bell },
 ];
 
 const secondaryNav = [
   { href: "/profile", label: "My Profile", icon: UserCircle },
   { href: "/company", label: "Company Profile", icon: Building2 },
-  { href: "/subscription", label: "Subscription", icon: CreditCard },
-  { href: "/billing", label: "Billing", icon: Receipt },
   { href: "/support", label: "Support", icon: LifeBuoy },
 ];
 
@@ -63,26 +55,22 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      <Link href="/dashboard" className="flex items-center gap-2 px-4 py-5" onClick={onNavigate}>
-        <span className="text-lg font-bold tracking-tight text-foreground">
-          ATS <span className="text-primary">Gem</span>
-        </span>
-      </Link>
-
-      <nav className="flex-1 space-y-1 overflow-y-auto px-3" aria-label="Primary">
+      <div className="flex items-center gap-2 px-4 py-5">
+        <Link href="/dashboard" className="text-lg font-bold tracking-tight text-foreground" onClick={onNavigate}>
+          ATS <span className="text-primary">GeM</span>
+        </Link>
+      </div>
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3" aria-label="Main navigation">
         {mainNav.map(renderLink)}
         <div className="my-3 h-px bg-border" />
         {secondaryNav.map(renderLink)}
       </nav>
-
-      <div className="p-3">
-        <div className="rounded-lg border border-border bg-secondary/60 p-3.5">
-          <p className="text-xs font-semibold text-foreground">Professional Plan</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">Renews on 29 Sep 2026</p>
-          <Button size="sm" className="mt-3 w-full" asChild>
-            <Link href="/subscription" onClick={onNavigate}>Upgrade Plan</Link>
-          </Button>
-        </div>
+      <div className="border-t border-border p-3">
+        <Button asChild variant="outline" className="w-full justify-start gap-2">
+          <Link href="/tenders" onClick={onNavigate}>
+            <Search className="h-4 w-4" /> Search Tenders
+          </Link>
+        </Button>
       </div>
     </div>
   );

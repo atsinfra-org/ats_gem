@@ -1,51 +1,46 @@
-"use client";
-
-import * as React from "react";
-import { FileText, FileSpreadsheet, FileArchive, File, Download, Eye, Loader2 } from "lucide-react";
-import { toast } from "sonner";
+import { FileText, Download, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { TenderDocument } from "@/lib/types";
-import { downloadDocument } from "@/lib/api/documents";
+import { Badge } from "@/components/ui/badge";
+import type { TenderDocumentSummary } from "@/lib/api/types";
+import { documentDownloadUrl } from "@/lib/api/documents";
+import { track } from "@/lib/analytics/client";
 
-const iconByType = {
-  pdf: FileText,
-  xlsx: FileSpreadsheet,
-  zip: FileArchive,
-  docx: File,
+const documentTypeLabels: Record<string, string> = {
+  NIT: "NIT",
+  TENDER_DOCUMENT: "Tender Document",
+  BOQ: "BOQ",
+  CORRIGENDUM: "Corrigendum",
+  TECHNICAL_SPEC: "Technical Spec",
+  ELIGIBILITY: "Eligibility",
+  ADDENDUM: "Addendum",
+  TERMS: "Terms",
+  DRAWING: "Drawing",
+  OTHER: "Document",
 };
 
-function formatSize(kb: number) {
-  if (kb >= 1024) return `${(kb / 1024).toFixed(1)} MB`;
-  return `${kb} KB`;
-}
-
-export function DocumentCard({ document: doc, onPreview }: { document: TenderDocument; onPreview: (doc: TenderDocument) => void }) {
-  const Icon = iconByType[doc.type];
-  const [downloading, setDownloading] = React.useState(false);
-
-  async function handleDownload() {
-    setDownloading(true);
-    await downloadDocument(doc);
-    setDownloading(false);
-    toast.success("Document download started", { description: doc.name });
-  }
+export function DocumentCard({ tenderId, document: doc, onPreview }: { tenderId: string; document: TenderDocumentSummary; onPreview: (doc: TenderDocumentSummary) => void }) {
+  const downloadUrl = documentDownloadUrl(tenderId, doc.id);
 
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-3 transition-colors hover:bg-secondary/40">
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-secondary">
-        <Icon className="h-5 w-5 text-foreground/70" />
+        <FileText className="h-5 w-5 text-foreground/70" />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-foreground">{doc.name}</p>
-        <p className="text-xs text-muted-foreground">{formatSize(doc.sizeKb)}</p>
+        <p className="truncate text-sm font-medium text-foreground">{doc.fileName}</p>
+        <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+          <Badge variant="secondary" className="text-[10px]">{documentTypeLabels[doc.documentType] ?? doc.documentType}</Badge>
+          <span>v{doc.version}</span>
+        </div>
       </div>
       <div className="flex items-center gap-1.5">
-        <Button variant="ghost" size="icon" aria-label={`Preview ${doc.name}`} onClick={() => onPreview(doc)}>
+        <Button variant="ghost" size="icon" aria-label={`Preview ${doc.fileName}`} onClick={() => { track("DOCUMENT_VIEWED", { entityType: "tender", entityId: tenderId, metadata: { tenderId, documentId: doc.id, documentType: doc.documentType } }); onPreview(doc); }}>
           <Eye className="h-4 w-4" />
         </Button>
-        <Button variant="outline" size="sm" onClick={handleDownload} disabled={downloading}>
-          {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-          Download
+        <Button variant="outline" size="sm" asChild>
+          <a href={downloadUrl} download={doc.fileName} onClick={() => track("DOCUMENT_DOWNLOADED", { entityType: "tender", entityId: tenderId, metadata: { tenderId, documentId: doc.id, documentType: doc.documentType } })}>
+            <Download className="h-3.5 w-3.5" /> Download
+          </a>
         </Button>
       </div>
     </div>

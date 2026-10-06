@@ -1,21 +1,21 @@
-import type { Tender } from "@/lib/types";
-import { formatINR } from "@/lib/utils";
+import type { TenderDetail } from "@/lib/api/types";
+import { formatMoney } from "@/lib/utils";
 import { format } from "date-fns";
 
-export function TenderInformation({ tender }: { tender: Tender }) {
+export function TenderInformation({ tender }: { tender: TenderDetail }) {
+  const location = [tender.city, tender.state].filter(Boolean).join(", ") || "Not available";
   const rows: [string, string][] = [
-    ["Tender ID", tender.tenderId],
-    ["Department", tender.department],
-    ["Tender Type", tender.tenderType],
-    ["Category", tender.category],
-    ["Location", `${tender.location}, ${tender.state}`],
-    ["Estimated Value", formatINR(tender.estimatedValue)],
-    ["EMD Amount", formatINR(tender.emdAmount)],
-    ["Document Fee", formatINR(tender.documentFee)],
-    ["Published Date", format(new Date(tender.publishedDate), "dd MMM yyyy")],
-    ["Last Date for Submission", format(new Date(tender.submissionDeadline), "dd MMM yyyy, hh:mm a")],
-    ["Bid Opening Date", format(new Date(tender.bidOpeningDate), "dd MMM yyyy, hh:mm a")],
-    ["Source", tender.source],
+    ["Reference Number", tender.referenceNumber ?? "Not available"],
+    ["Procuring Entity", tender.procuringEntity?.name ?? tender.department ?? "Not available"],
+    ["Tender Type", tender.tenderType?.name ?? "Not available"],
+    ["Category", tender.category?.name ?? "Not available"],
+    ["Location", location],
+    ["Estimated Value", formatMoney(tender.estimatedValue)],
+    ["EMD Amount", formatMoney(tender.emdAmount)],
+    ["Tender Fee", formatMoney(tender.tenderFee)],
+    ["Published Date", format(new Date(tender.publishedAt), "dd MMM yyyy")],
+    ["Last Date for Submission", tender.closingAt ? format(new Date(tender.closingAt), "dd MMM yyyy, hh:mm a") : "Not available"],
+    ["Bid Opening Date", tender.openingAt ? format(new Date(tender.openingAt), "dd MMM yyyy, hh:mm a") : "Not available"],
   ];
 
   return (

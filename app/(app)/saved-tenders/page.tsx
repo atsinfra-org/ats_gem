@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect -- loading flags for fetch-on-mount/param-change effects */
 
 import * as React from "react";
 import { Bookmark, Search } from "lucide-react";
@@ -12,32 +13,48 @@ import {
 } from "@/components/ui/select";
 import { TenderCard } from "@/components/tender/tender-card";
 import { EmptyState } from "@/components/states/empty-state";
+import { ApiErrorState } from "@/components/states/status-error";
 import { SkeletonTender } from "@/components/states/skeletons";
-import { useAppStore } from "@/lib/store/app-store";
-import { tenders } from "@/lib/mock/tenders";
+import { listWatchlist } from "@/lib/api/watchlist";
+import { getTender } from "@/lib/api/tenders";
+import type { TenderDetail } from "@/lib/api/types";
 
 export default function SavedTendersPage() {
-  const { savedTenderIds } = useAppStore();
   const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<unknown>(null);
+  const [tenders, setTenders] = React.useState<TenderDetail[]>([]);
   const [query, setQuery] = React.useState("");
   const [sort, setSort] = React.useState("latest");
 
-  React.useEffect(() => {
-    const t = setTimeout(() => setLoading(false), 400);
-    return () => clearTimeout(t);
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const items = await listWatchlist();
+      const results = await Promise.allSettled(items.map((i) => getTender(i.tenderId)));
+      setTenders(results.filter((r): r is PromiseFulfilledResult<TenderDetail> => r.status === "fulfilled").map((r) => r.value));
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  let saved = tenders.filter((t) => savedTenderIds.includes(t.id));
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  let saved = tenders;
   if (query) {
     const kw = query.toLowerCase();
-    saved = saved.filter((t) => t.title.toLowerCase().includes(kw) || t.department.toLowerCase().includes(kw));
+    saved = saved.filter((t) => t.title.toLowerCase().includes(kw) || (t.department ?? "").toLowerCase().includes(kw));
   }
   if (sort === "closing_soon") {
-    saved = [...saved].sort((a, b) => new Date(a.submissionDeadline).getTime() - new Date(b.submissionDeadline).getTime());
+    saved = [...saved].sort((a, b) => new Date(a.closingAt ?? 8_640_000_000_000_000).getTime() - new Date(b.closingAt ?? 8_640_000_000_000_000).getTime());
   } else if (sort === "value_high") {
-    saved = [...saved].sort((a, b) => b.estimatedValue - a.estimatedValue);
+    saved = [...saved].sort((a, b) => Number(b.estimatedValue?.amount ?? 0) - Number(a.estimatedValue?.amount ?? 0));
   } else {
-    saved = [...saved].sort((a, b) => new Date(b.publishedDate).getTime() - new Date(a.publishedDate).getTime());
+    saved = [...saved].sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 
   return (
@@ -53,7 +70,7 @@ export default function SavedTendersPage() {
           <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search saved tenders..." className="pl-9" />
         </div>
         <Select value={sort} onValueChange={setSort}>
-          <SelectTrigger className="sm:w-52">
+          <SelectTrigger className="sm:w-52" aria-label="Sort saved tenders">
             <SelectValue placeholder="Sort by" />
           </SelectTrigger>
           <SelectContent>
@@ -70,6 +87,8 @@ export default function SavedTendersPage() {
             <SkeletonTender key={i} />
           ))}
         </div>
+      ) : error ? (
+        <ApiErrorState error={error} onRetry={load} />
       ) : saved.length === 0 ? (
         <EmptyState
           icon={Bookmark}

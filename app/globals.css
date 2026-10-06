@@ -7,6 +7,7 @@
   /* Brand */
   --color-primary: #ef233c;
   --color-primary-hover: #d61f35;
+  --color-primary-on-dark: #ff6b7d; /* brand tint for text on the navy admin sidebar */
   --color-primary-foreground: #ffffff;
 
   --color-navy-deep: #0b132b;

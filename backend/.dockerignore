@@ -1,0 +1,16 @@
+node_modules
+dist
+coverage
+storage
+.data
+src/generated
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+test
+docs
+docker-compose*.yml
+Dockerfile
+.dockerignore

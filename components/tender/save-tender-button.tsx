@@ -1,9 +1,9 @@
 "use client";
 
 import { Bookmark } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { useAppStore } from "@/lib/store/app-store";
+import { useWatchlist } from "@/lib/store/watchlist-store";
+import { track } from "@/lib/analytics/client";
 import { cn } from "@/lib/utils";
 
 export function SaveTenderButton({
@@ -19,7 +19,7 @@ export function SaveTenderButton({
   showLabel?: boolean;
   className?: string;
 }) {
-  const { isSaved, toggleSaveTender } = useAppStore();
+  const { isSaved, toggle } = useWatchlist();
   const saved = isSaved(tenderId);
 
   return (
@@ -28,12 +28,13 @@ export function SaveTenderButton({
       variant={variant}
       size={size}
       aria-pressed={saved}
+      aria-label={saved ? "Remove from saved tenders" : "Save tender"}
       className={cn(saved && "border-primary text-primary", className)}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        const nowSaved = toggleSaveTender(tenderId);
-        toast.success(nowSaved ? "Tender saved" : "Tender removed from saved");
+        track(saved ? "TENDER_UNSAVED" : "TENDER_SAVED", { entityType: "tender", entityId: tenderId, metadata: saved ? { tenderId } : { tenderId, source: "detail" } });
+        void toggle(tenderId);
       }}
     >
       <Bookmark className={cn("h-4 w-4", saved && "fill-current")} />

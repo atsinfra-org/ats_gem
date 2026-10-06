@@ -1,15 +1,23 @@
 import { CheckCircle2, Circle } from "lucide-react";
-import type { Tender } from "@/lib/types";
+import type { TenderDetail } from "@/lib/api/types";
 import { format } from "date-fns";
 import { cn, hasPassed } from "@/lib/utils";
 
-export function ImportantDates({ tender }: { tender: Tender }) {
+export function ImportantDates({ tender }: { tender: TenderDetail }) {
   const events = [
-    { label: "Published Date", date: tender.publishedDate },
-    { label: "Document Download Start", date: tender.documentDownloadStart },
-    { label: "Last Date for Submission", date: tender.submissionDeadline, highlight: true },
-    { label: "Bid Opening Date", date: tender.bidOpeningDate },
-  ];
+    { label: "Published Date", date: tender.publishedAt },
+    { label: "Last Date for Submission", date: tender.closingAt, highlight: true },
+    { label: "Bid Opening Date", date: tender.openingAt },
+  ].filter((e): e is { label: string; date: string; highlight?: boolean } => !!e.date);
+
+  if (events.length === 0) {
+    return (
+      <div className="rounded-lg border border-border bg-card p-5">
+        <h3 className="text-sm font-semibold text-foreground">Important Dates</h3>
+        <p className="mt-3 text-sm text-muted-foreground">No dates are available for this tender.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-border bg-card p-5">

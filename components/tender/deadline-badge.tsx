@@ -12,8 +12,8 @@ export function DeadlineBadge({ date, className }: { date: string; className?: s
       className={cn(
         "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold",
         isClosed && "bg-secondary text-muted-foreground",
-        isUrgent && "bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] text-[var(--color-danger)]",
-        !isClosed && !isUrgent && "bg-[color-mix(in_srgb,var(--color-info)_10%,transparent)] text-[var(--color-info)]",
+        isUrgent && "bg-[color-mix(in_srgb,var(--color-danger)_10%,transparent)] text-[color-mix(in_srgb,var(--color-danger)_70%,black)] dark:text-[var(--color-danger)]",
+        !isClosed && !isUrgent && "bg-[color-mix(in_srgb,var(--color-info)_10%,transparent)] text-[color-mix(in_srgb,var(--color-info)_70%,black)] dark:text-[var(--color-info)]",
         className
       )}
     >

@@ -4,9 +4,11 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, Search } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetClose } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { useSession } from "@/lib/auth/session-context";
 import { useAuthDialog } from "@/lib/store/auth-dialog-store";
 
 const navLinks = [
@@ -23,6 +25,15 @@ export function PublicNavbar() {
   const [scrolled, setScrolled] = React.useState(false);
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const { open: openAuth } = useAuthDialog();
+  const { user, isAuthenticated, sessionExpired, logout } = useSession();
+  const signedIn = isAuthenticated && !sessionExpired;
+  // Until the session check settles the buttons keep their space but stay hidden, so a signed-in
+  // visitor never sees "Login" flash and the bar doesn't shift.
+  const pending = user === undefined;
+
+  function signOut() {
+    logout().catch(() => toast.error("Could not log out. Please try again."));
+  }
 
   React.useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
@@ -45,7 +56,7 @@ export function PublicNavbar() {
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         <Link href="/" className="flex items-center gap-2">
           <span className={cn("text-xl font-bold tracking-tight", onDark ? "text-white" : "text-foreground")}>
-            ATS <span className="text-primary">Gem</span>
+            ATS <span className="text-primary">GeM</span>
           </span>
         </Link>
 
@@ -81,12 +92,23 @@ export function PublicNavbar() {
           </Button>
           <Button
             variant="outline"
-            onClick={openAuth}
-            className={cn(onDark && "border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white")}
+            onClick={signedIn ? signOut : openAuth}
+            className={cn(
+              onDark && "border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white",
+              pending && "invisible"
+            )}
           >
-            Login
+            {signedIn ? "Log out" : "Login"}
           </Button>
-          <Button onClick={openAuth}>Get Started</Button>
+          {signedIn ? (
+            <Button asChild>
+              <Link href="/dashboard">Dashboard</Link>
+            </Button>
+          ) : (
+            <Button onClick={openAuth} className={cn(pending && "invisible")}>
+              Get Started
+            </Button>
+          )}
         </div>
 
         <button
@@ -105,7 +127,7 @@ export function PublicNavbar() {
         <SheetContent side="right" className="flex flex-col">
           <SheetHeader>
             <SheetTitle>
-              ATS <span className="text-primary">Gem</span>
+              ATS <span className="text-primary">GeM</span>
             </SheetTitle>
           </SheetHeader>
           <nav className="mt-4 flex flex-col gap-1" aria-label="Mobile navigation">
@@ -120,24 +142,33 @@ export function PublicNavbar() {
               </SheetClose>
             ))}
           </nav>
-          <div className="mt-auto flex flex-col gap-2 border-t border-border pt-4">
+          <div className={cn("mt-auto flex flex-col gap-2 border-t border-border pt-4", pending && "invisible")}>
             <Button
               variant="outline"
               onClick={() => {
                 setMobileOpen(false);
-                openAuth();
+                if (signedIn) signOut();
+                else openAuth();
               }}
             >
-              Login
+              {signedIn ? "Log out" : "Login"}
             </Button>
-            <Button
-              onClick={() => {
-                setMobileOpen(false);
-                openAuth();
-              }}
-            >
-              Get Started
-            </Button>
+            {signedIn ? (
+              <SheetClose asChild>
+                <Button asChild>
+                  <Link href="/dashboard">Dashboard</Link>
+                </Button>
+              </SheetClose>
+            ) : (
+              <Button
+                onClick={() => {
+                  setMobileOpen(false);
+                  openAuth();
+                }}
+              >
+                Get Started
+              </Button>
+            )}
           </div>
         </SheetContent>
       </Sheet>

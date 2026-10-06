@@ -3,6 +3,7 @@ import { PricingGrid } from "@/components/subscription/pricing-grid";
 
 export const metadata: Metadata = {
   title: "Pricing",
+  alternates: { canonical: "/pricing" },
   description: "Simple, transparent pricing plans for businesses of every size.",
 };
 
@@ -16,7 +17,7 @@ export default function PricingPage() {
         </p>
       </div>
       <div className="mt-12">
-        <PricingGrid mode="public" />
+        <PricingGrid />
       </div>
     </div>
   );

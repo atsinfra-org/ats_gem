@@ -1,0 +1,282 @@
+# ATS GeM Backend — Database Schema Plan
+
+Engine: PostgreSQL 16+ (dev machine has 18) · ORM: Prisma · Extensions: `pg_trgm`, `citext`, `unaccent`.
+
+Conventions:
+- `id UUID` (v7) primary keys; `created_at`, `updated_at` as `TIMESTAMPTZ` on every table.
+- Money: `NUMERIC(18,2)` + `currency CHAR(3) DEFAULT 'INR'`. Never float.
+- Soft delete (`deleted_at TIMESTAMPTZ`, `deleted_by UUID`) on business entities where history matters (users, organizations, tenders, sources, saved searches, documents). Unique constraints on soft-deleted tables are **partial** (`WHERE deleted_at IS NULL`).
+- Enums are Postgres enums for closed sets that rarely change (statuses); open-ended sets (categories, feature keys, permission keys) are lookup tables.
+- Table names are `snake_case` plural; Prisma models are `PascalCase` with `@@map`.
+- Timestamps are written in UTC: every connection sets `TimeZone=UTC` (see ARCHITECTURE §16.7).
+
+---
+
+## 0. Implemented so far
+
+| Migration | Contents |
+|---|---|
+| `20260924165237_init_foundation` (Phase 0) | extensions `pg_trgm`, `citext`, `unaccent`; `app_settings` |
+| `20260924173053_phase1_platform_plumbing` (Phase 1) | `outbox_events`, `job_schedules`, `tender_sources`, `crawl_runs`, `tenders` (ingestion subset), `tender_source_records`; enums `source_type`, `source_health_status`, `crawl_trigger`, `crawl_run_status`, `tender_lifecycle`, `tender_status`; CHECK constraints below |
+| `20260925073540_phase2_backend_foundation` (Phase 2) | `users`, `user_identities`, `sessions`, `auth_tokens`, `roles`, `permissions`, `role_permissions`, `user_roles`, `organizations`, `organization_members`, `organization_invitations`, `states`, `districts`, `categories`, `tender_types`, `stored_files`, `tender_documents`, `saved_searches`, `watchlist_items`, `notifications`, `audit_logs`; optional taxonomy columns added to `tenders`; enums `user_status`, `auth_provider`, `auth_token_type`, `organization_role`, `state_type`, `storage_provider`, `tender_document_type`, `tender_document_status`, `procurement_type`; CHECK constraints below |
+
+All three migrations only add objects. CI applies them to an empty database and fails on any drift between
+`schema.prisma` and the migrated database (`prisma migrate diff --exit-code`).
+
+Phase 1 tables as built (full column lists in `prisma/schema.prisma`), and how they differ from the
+target design in the sections below:
+
+| Table | As built | Database constraints |
+|---|---|---|
+| `outbox_events` | as §9, plus `available_at` (retry backoff), `last_error`, `correlation_id` | index `(published_at, available_at)`; CHECK `attempts >= 0` |
+| `job_schedules` | **new**: `key` UNIQUE, `queue`, `job_name`, `cron` or `every_ms`, `timezone` (default `Asia/Kolkata`), `payload JSONB`, `enabled`, `description` | CHECK exactly one of `cron` / `every_ms`; CHECK `every_ms >= 1000` |
+| `tender_sources` | as §5 without credentials/sessions (Phase 5); adds `crawl_timezone`, `health_checked_at`; `health_status` gains the initial value `UNKNOWN` | `UNIQUE(slug)` (slugs are never reused, so not partial) |
+| `crawl_runs` | as §5, plus `job_id` (retries resume the same run) and `correlation_id` | index `(source_id, created_at DESC)`, `(status)`; CHECK all counters `>= 0` |
+| `tenders` | ingestion subset of §4: reference number (+ normalized), title, description, department, `state_code`, city, location text, `estimated_value`/`emd_amount`/`tender_fee` `NUMERIC(18,2)`, `currency`, published/closing/opening times, `lifecycle`, `status` + `status_computed_at`, `primary_source_url`, `last_synced_at`, soft delete | CHECK money `>= 0`; CHECK `closing_at >= published_at`; CHECK `currency ~ '^[A-Z]{3}$'`; CHECK `state_code ~ '^[A-Z]{2}$'`; indexes `(status, closing_at)`, `(published_at DESC)`, `(reference_number_normalized)` |
+| `tender_source_records` | as §4 | `UNIQUE(source_id, external_tender_id)`; CHECK `payload_hash ~ '^[0-9a-f]{64}$'`; index `(tender_id)` |
+
+Phase 2 tables as built — see §1/§2/§3/§6/§7/§9 below for full column lists; differences from the
+target design:
+
+| Table | As built | Database constraints |
+|---|---|---|
+| `users` | as §1 | `UNIQUE(email)` on `CITEXT` — **plain, not partial** on `deleted_at IS NULL` (see below) |
+| `organizations` | as §2, minus `organization_documents` (KYC uploads — not built; see below) | `UNIQUE(slug)`, `UNIQUE(gstin)` — both plain, not partial; CHECK GSTIN/PAN format |
+| `organization_members` | as §2 | PK `(organization_id, user_id)`; "exactly one OWNER" enforced in `OrganizationsService`, not a DB constraint |
+| `categories` | as §3, plus `is_active` (prompt-requested) | CHECK a category is never its own parent |
+| `tender_documents` | as §6, using the fuller status enum (`PENDING, DOWNLOADED, PROCESSING, PROCESSED, FAILED, QUARANTINED`) rather than the API's simplified 3-state one; `supersedes_id` and `source_record_id` are plain UUID columns, not FKs (nothing queries them yet) | `UNIQUE(tender_id, file_id)`; index `(tender_id, document_type)`, `(status)` |
+| `stored_files` | as §6 | `UNIQUE(checksum_sha256)` |
+| `saved_searches` | criteria as a JSONB blob (validated at the API layer against the same shape `GET /search/tenders` accepts), scoped to `organization_id` per ADR-06 | index `(organization_id)` |
+| `watchlist_items` | scoped to `user_id`, not `organization_id` (a personal shortlist) | `UNIQUE(user_id, tender_id)`; index `(tender_id)` |
+| `notifications` | `type` is free text, not an enum (open-ended set — see conventions above). **Phase 8** adds `organization_id`, `priority` (`notification_priority`), `metadata JSONB` (closed validated snapshot), `dedup_key`, `source_event_id`, `template_key`, `template_version`, `expires_at` | `UNIQUE(user_id, dedup_key)`; indexes `(user_id, is_read, created_at DESC)`, `(user_id, type, created_at DESC)`, `(organization_id)` |
+| `notification_preferences` | **Phase 8**: `user_id`, `category` (`notification_category`), `channel` (`IN_APP`/`EMAIL`), `enabled` | `UNIQUE(user_id, category, channel)`; only explicit choices are stored, defaults live in code |
+| `notification_settings` | **Phase 8**: `user_id` PK, `deadline_offsets_hours INT[]` (default `{24}`), `quiet_hours_enabled`, `quiet_start`, `quiet_end` (`HH:mm`), `timezone` | one row per user |
+| `notification_deliveries` | **Phase 8**: `user_id`, `notification_id NULL`, `digest_id NULL` (self-FK for digest members), `channel`, `status` (`delivery_status`: QUEUED, SENDING, SENT, RETRYING, FAILED, SKIPPED, DIGEST_PENDING, DIGESTED), `template_key`, `template_version`, `provider`, `provider_message_id`, `attempts`, `skip_reason`, `last_error` (sanitized), `item_count`, `queued_at`, `sent_at`, `failed_at` | `UNIQUE(notification_id, channel)`; indexes `(status, created_at)`, `(user_id, created_at DESC)`, `(user_id, status)`, `(digest_id)` |
+| `saved_searches.alert_frequency` | **Phase 8**: `saved_search_alert_frequency` OFF (default) / IMMEDIATE / DAILY | index `(alert_frequency)` |
+| `audit_logs` | as §9 | index `(resource_type, resource_id)`, `(actor_user_id, created_at DESC)`, `(action, created_at DESC)` |
+
+**Partial unique indexes remain deferred** (need raw SQL or Prisma's `partialIndexes` preview flag —
+see below): `users.email`, `organizations.slug`/`gstin`, and "one OWNER per org" / "one pending
+invite per (org, email)" would all ideally exclude soft-deleted/superseded rows. Until then, a
+soft-deleted user's email or a soft-deleted organization's slug/GSTIN cannot be reused, and the
+"exactly one" invariants are application-enforced only (same trade-off already accepted for
+`tender_sources.slug` in Phase 1).
+
+Deliberately not yet built, arriving with their phases as additive migrations: `procuring_entity_id`
+and the `(procuring_entity_id, reference_number_normalized)` partial unique on `tenders` (Phase 3);
+the "closing_at required for ACTIVE" CHECK (Phase 3, once real-portal data rules are settled — some
+portals publish without a deadline); `search_vector` (Phase 4); `tender_versions` and
+`duplicate_candidates` (Phase 3); `source_credentials`, `source_sessions`, `crawl_run_events`
+(Phase 5); `document_contents`, `document_archives`, `organization_documents` (KYC uploads — Phase 6);
+`districts` beyond the bare table (no LGD dataset seeded yet).
+
+---
+
+## 1. Identity & access
+
+| Table | Key columns | Constraints / indexes |
+|---|---|---|
+| `users` | `email CITEXT`, `name`, `phone`, `password_hash NULL` (null for Google-only accounts), `designation`, `avatar_file_id`, `is_email_verified`, `is_phone_verified`, `terms_accepted_at`, `terms_version`, `status ENUM(ACTIVE, SUSPENDED, PENDING)`, `last_login_at`, soft delete (staff roles via `user_roles`) | `UNIQUE(email) WHERE deleted_at IS NULL`; index `(status)` |
+| `user_identities` | `user_id FK`, `provider ENUM(GOOGLE)`, `provider_user_id`, `email` | `UNIQUE(provider, provider_user_id)` |
+| `sessions` | `user_id FK`, `family_id`, `refresh_token_hash CHAR(64)`, `expires_at`, `revoked_at`, `revoked_reason`, `replaced_by_id`, `ip INET`, `user_agent`, `device_label`, `last_used_at` | `UNIQUE(refresh_token_hash)`; index `(user_id, revoked_at)`; index `(family_id)` |
+| `auth_tokens` | `user_id FK`, `type ENUM(EMAIL_VERIFY, PASSWORD_RESET, ORG_INVITE)`, `token_hash`, `expires_at`, `used_at` | `UNIQUE(token_hash)`; index `(user_id, type)` |
+| `roles` | `key` — staff roles `SUPER_ADMIN, ADMIN, MODERATOR, CRAWLER_MANAGER, SUPPORT` (customers hold none), `name`, `is_system` | `UNIQUE(key)` |
+| `permissions` | `key` (`tender.update`…), `description` | `UNIQUE(key)` |
+| `role_permissions` | `role_id FK`, `permission_id FK` | PK `(role_id, permission_id)` |
+| `user_roles` | `user_id FK`, `role_id FK`, `granted_by` | PK `(user_id, role_id)` |
+
+Login-attempt counters and lockouts live in Redis (TTL-based), not Postgres.
+
+## 2. Customer organizations
+
+| Table | Key columns | Constraints / indexes |
+|---|---|---|
+| `organizations` | `name`, `slug`, `is_personal`, `gstin`, `pan`, `industry`, `company_size`, `address`, `state_code`, `city`, `website`, `contact_person`, soft delete | `UNIQUE(slug)`; `UNIQUE(gstin) WHERE gstin IS NOT NULL AND deleted_at IS NULL`; CHECK on GSTIN/PAN format |
+| `organization_members` | `organization_id FK`, `user_id FK`, `role ENUM(OWNER, MEMBER, VIEWER)`, `joined_at` | PK `(organization_id, user_id)`; partial unique: one OWNER per org |
+| `organization_invitations` | `organization_id`, `email CITEXT`, `role`, `token_hash`, `invited_by`, `expires_at`, `accepted_at` | `UNIQUE(organization_id, email) WHERE accepted_at IS NULL` |
+| `organization_business_categories` | `organization_id`, `category_id` | PK both |
+| `organization_documents` | `organization_id`, `type ENUM(GST_CERT, PAN, REGISTRATION, OTHER)`, `file_id FK stored_files`, `verification_status ENUM(PENDING, VERIFIED, REJECTED)`, `reviewed_by` | index `(organization_id)` |
+
+## 3. Taxonomy & reference data
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `states` | `code CHAR(2)` PK (`MH`, `UP`, …), `name`, `type ENUM(STATE, UT)` | 28 states + 8 UTs; codes match the frontend map |
+| `districts` | `state_code FK`, `name`, `lgd_code` | `UNIQUE(state_code, name)` |
+| `categories` | `parent_id FK NULL`, `slug`, `name`, `industry`, `sort_order` | `UNIQUE(slug)`; two levels (category → sub-category) |
+| `procuring_entities` | `name`, `name_normalized`, `type ENUM(CENTRAL_MINISTRY, STATE_DEPT, PSU, MUNICIPAL, PRIVATE, OTHER)`, `state_code NULL`, `parent_id NULL` | `UNIQUE(name_normalized, state_code)`; GIN trigram on `name_normalized` |
+| `tender_types` | `key` (`OPEN`, `LIMITED`, `EOI`, `RFP`, `SINGLE`, `GLOBAL`), `name` | lookup |
+
+## 4. Tender core
+
+### `tenders` (canonical record)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID | |
+| `slug` | TEXT | stable public identifier for URLs |
+| `reference_number` / `reference_number_normalized` | TEXT | normalized = upper, stripped of spaces/punctuation |
+| `title`, `title_normalized` | TEXT | normalized used for trigram dedupe |
+| `description` | TEXT | |
+| `procuring_entity_id` | UUID FK | issuer (ADR-05) |
+| `department` | TEXT | free text as published |
+| `category_id`, `sub_category_id` | UUID FK | |
+| `tender_type_key` | TEXT FK | |
+| `procurement_type` | ENUM(GOODS, WORKS, SERVICES, CONSULTANCY) | |
+| `state_code`, `district_id`, `city`, `location_text` | | |
+| `estimated_value`, `emd_amount`, `tender_fee`, `performance_security` | NUMERIC(18,2) NULL | + `currency` |
+| `published_at`, `document_download_start_at`, `closing_at`, `opening_at` | TIMESTAMPTZ | `closing_at` required for ACTIVE tenders (CHECK) |
+| `bid_validity_days`, `work_period_days` | INT | |
+| `eligibility_criteria` | JSONB | structured list; also `terms`, `bidding_process` JSONB |
+| `contact_name`, `contact_email`, `contact_phone` | TEXT | |
+| `primary_source_url` | TEXT | |
+| `lifecycle` | ENUM(ACTIVE, CANCELLED, AWARDED, ARCHIVED) | stored truth |
+| `status` | ENUM(UPCOMING, OPEN, CLOSING_SOON, CLOSED, CANCELLED, AWARDED, ARCHIVED) | derived, denormalized by `TenderStatusService` |
+| `status_computed_at` | TIMESTAMPTZ | |
+| `is_flagged`, `flag_reason` | | moderation |
+| `last_synced_at` | TIMESTAMPTZ | |
+| `search_vector` | TSVECTOR | **Phase 7**: maintained by trigger `tenders_search_vector_trg` via `tender_search_vector_build()` (weights A title+reference, B department+entity, C category/location/state, D tender type); recomputed by the `search.index-tender` job and `search:reindex`. See ARCHITECTURE Sec 20.2 |
+| `deleted_at`, `deleted_by` | | soft delete |
+
+Constraints: `UNIQUE(procuring_entity_id, reference_number_normalized) WHERE reference_number_normalized IS NOT NULL AND deleted_at IS NULL` (database-level duplicate prevention); CHECKs `closing_at >= published_at`, non-negative money.
+
+Indexes (from real query patterns, all partial `WHERE deleted_at IS NULL`):
+- `(status, closing_at)` — "closing soon", open lists
+- `(state_code, status, closing_at)` — state filter + map drill-down
+- `(category_id, published_at DESC)` — category browse
+- `(procuring_entity_id, published_at DESC)` — entity pages, follows
+- `(published_at DESC)` — latest first, market wire
+- `(reference_number_normalized)`
+- GIN `(title_normalized gin_trgm_ops)` — fuzzy dedupe
+- GIN `(search_vector)` — **Phase 7**: `tenders_search_vector_gin_idx`, keyword search
+- GIN `(reference_number_normalized gin_trgm_ops)` — `tenders_reference_norm_trgm_idx`, partial-reference matching
+- Phase 7 filter/sort support: `tenders_published_id_idx` (partial, `published_at DESC, id DESC` where not deleted/duplicate), `tenders_state_published_idx`, `tenders_closing_at_idx`, `tenders_opening_at_idx`, `tenders_estimated_value_idx`, `tenders_emd_amount_idx`, `tenders_tender_fee_idx`, `tenders_tender_type_key_idx`, `tenders_city_lower_idx` (`lower(city)`), and `tender_source_records_source_tender_idx` for the source filter
+
+### Source linkage & versions
+| Table | Key columns | Constraints / indexes |
+|---|---|---|
+| `tender_source_records` | `tender_id FK`, `source_id FK`, `external_tender_id`, `source_url`, `payload_hash CHAR(64)`, `raw_payload JSONB`, `normalized_payload JSONB`, `first_seen_at`, `last_seen_at`, `last_changed_at` | `UNIQUE(source_id, external_tender_id)`; index `(tender_id)` |
+| `tender_versions` | `tender_id FK`, `version INT`, `change_type ENUM(INITIAL, UPDATE, CORRIGENDUM, CANCELLATION)`, `diff JSONB`, `source_record_id`, `detected_at` | `UNIQUE(tender_id, version)` |
+| `duplicate_candidates` | `tender_id`, `candidate_tender_id`, `score NUMERIC(4,3)`, `signals JSONB`, `status ENUM(PENDING, MERGED, REJECTED)`, `reviewed_by` | `UNIQUE(tender_id, candidate_tender_id)`; CHECK `tender_id < candidate_tender_id` |
+
+Scale note: `raw_payload` grows fastest. Past ~50 M rows or 500 GB, move raw payloads to object storage (keep the hash in Postgres) or partition `tender_source_records` by `first_seen_at` month.
+
+### 4.1 Phase 3 as built — deviations from the target design above
+- `duplicate_candidates.status` is `PENDING | CONFIRMED | REJECTED | AUTO_CONFIRMED` (not the
+  `PENDING | MERGED | REJECTED` sketched above) — `AUTO_CONFIRMED` distinguishes an engine auto-link
+  from an admin-confirmed one, and `CONFIRMED` (not `MERGED`) matches what actually happens: the
+  losing tender is archived, never merged/deleted (docs/ARCHITECTURE.md §18.3/§18.8).
+- `tenders.source_status_raw` (TEXT, nullable) was added, not in the original sketch — preserves the
+  portal's literal status text alongside `lifecycle` (§18.5).
+- `tenders.duplicate_of_id` (UUID FK, self-referential, `ON DELETE SET NULL`) was added — set when a
+  `DuplicateCandidate` is `CONFIRMED` (§18.8).
+- Four tables not listed above were added, all under `docs/ARCHITECTURE.md §18`:
+  - `procuring_entities` (`name`, `name_normalized`, `entity_type`, `parent_id`, `state_code`,
+    `district_id`, `status ENUM(ACTIVE, MERGED, INACTIVE)`, `merged_into_id`) —
+    `UNIQUE(name_normalized, state_code)`, GIN trigram index on `name_normalized`.
+  - `procuring_entity_aliases` (`procuring_entity_id FK`, `alias`, `alias_normalized`) —
+    `UNIQUE(alias_normalized)`.
+  - `source_entity_mappings` (`source_id FK`, `source_entity_name`, `source_entity_normalized`,
+    `procuring_entity_id FK NULL`, `confidence NUMERIC(4,3)`, `method ENUM(EXACT_SOURCE_MAPPING,
+    EXACT_NORMALIZED_NAME, ALIAS, FUZZY, MANUAL)`, `verification_status ENUM(UNVERIFIED, VERIFIED,
+    REJECTED)`) — `UNIQUE(source_id, source_entity_normalized)`.
+  - `tender_quality_issues` (`tender_id FK`, `source_record_id`, `severity ENUM(INFO, WARNING,
+    ERROR)`, `code`, `message`, `resolved_at`) — indexes `(tender_id)`, `(severity, resolved_at)`.
+- Partial unique indexes actually added this phase (raw SQL, §18.12): `UNIQUE(organization_id) WHERE
+  role = 'OWNER'` on `organization_members`; `UNIQUE(organization_id, email) WHERE accepted_at IS
+  NULL` on `organization_invitations`. `users.email` / `organizations.slug`/`gstin` stay plain-unique
+  for now (§18.12 explains why).
+
+## 5. Sources & crawling
+
+| Table | Key columns | Constraints / indexes |
+|---|---|---|
+| `tender_sources` | `name`, `slug`, `website_url`, `description`, `source_type ENUM(GOVT_PORTAL, PSU, STATE_PORTAL, PRIVATE, AGGREGATOR, MOCK)`, `adapter_key`, `authentication_required`, `is_active`, `crawl_enabled`, `crawl_schedule` (cron string), `crawl_config JSONB` (`requestsPerMinute, maxConcurrency, minDelayMs, maxAttempts, backoffMs`), `health_status ENUM(HEALTHY, DEGRADED, AUTH_REQUIRED, NEEDS_MANUAL_ACTION, DISABLED)`, `last_successful_run_at`, `last_failed_run_at`, soft delete | `UNIQUE(slug)` |
+| `source_credentials` | `source_id FK UNIQUE`, `username_ciphertext`, `password_ciphertext`, `data_key_wrapped`, `iv`, `auth_tag`, `key_version`, `rotated_at` | never selected by default; separate repository with explicit decrypt method |
+| `source_sessions` | `source_id`, `cookies_ciphertext`, `expires_at`, `created_at` | latest valid session per source |
+| `crawl_runs` | `source_id`, `trigger ENUM(SCHEDULE, MANUAL, RETRY)`, `triggered_by`, `status ENUM(QUEUED, RUNNING, COMPLETED, FAILED, RETRYING, CANCELLED)`, `job_id`, `correlation_id`, `started_at`, `completed_at`, `duration_ms`, `records_found`, `records_created`, `records_updated`, `records_skipped`, `documents_found`, `error_count`, `failure_reason` | index `(source_id, created_at DESC)`, `(status)`; invariant `found = created + updated + skipped + errors` (skipped = unchanged + invalid + suppressed) |
+| `crawl_run_events` | `crawl_run_id`, `level`, `job_id`, `message`, `context JSONB`, `created_at` | index `(crawl_run_id, created_at)`; retention 90 days |
+
+## 6. Documents
+
+| Table | Key columns | Constraints / indexes |
+|---|---|---|
+| `stored_files` | `checksum_sha256 CHAR(64)`, `storage_provider`, `bucket`, `storage_key`, `mime_type`, `file_size BIGINT`, `original_name` | `UNIQUE(checksum_sha256)` — content-addressed dedupe |
+| `tender_documents` | `tender_id FK`, `file_id FK`, `document_type ENUM(NIT, TENDER_DOCUMENT, BOQ, CORRIGENDUM, TECHNICAL_SPEC, ELIGIBILITY, ADDENDUM, TERMS, DRAWING, OTHER)`, `file_name`, `version INT`, `supersedes_id NULL`, `source_url`, `source_record_id`, `downloaded_at`, `processed_at`, `status ENUM(PENDING, DOWNLOADED, PROCESSING, PROCESSED, FAILED, QUARANTINED)`, `failure_reason`, soft delete | `UNIQUE(tender_id, file_id)`; index `(tender_id, document_type)`, `(status)` |
+| `document_contents` | `file_id FK UNIQUE`, `text TEXT`, `page_count`, `language`, `ocr_used`, `extraction_ms` | keyed by file so identical PDFs are processed once |
+| `document_archives` | `tender_id`, `requested_by`, `file_id NULL`, `status`, `expires_at` | "Download all" zip bundles |
+
+### 6.1 Phase 4 as built
+`stored_files`/`tender_documents` (above) are now backed by a real `StorageProvider` abstraction and
+`DocumentsService` (docs/ARCHITECTURE.md §19.4/19.5): checksum-based dedupe, `supersedesId`-chained
+versioning, and a new `tender_documents.source_document_id` column (a source's own document
+identifier, independent of `source_url`). `document_contents` (OCR/text-extraction) and
+`document_archives` ("download all" zip bundles) remain **unbuilt target design, not Phase 4 scope**
+- `document_contents` in particular is explicitly excluded since OCR/text-extraction is prohibited
+this phase; both stay documented here as the pre-existing target for whichever future phase adds
+them.
+
+Phase 4 also added three new tables, all under docs/ARCHITECTURE.md §19:
+- `tender_requirements` (`tender_id FK`, `type ENUM(ELIGIBILITY, FINANCIAL, TECHNICAL, EXPERIENCE,
+  LEGAL, REGISTRATION, DOCUMENTATION, LOCATION, PERSONNEL, EQUIPMENT, OTHER)`, `title`, `description`,
+  `value NUMERIC(18,2) NULL`, `unit`, `is_mandatory`, `source_reference`) — index `(tender_id, type)`,
+  CHECK `value >= 0`.
+- `tender_events` (`tender_id FK`, `event_type ENUM(PUBLISHED, DOCUMENT_AVAILABLE,
+  CLARIFICATION_OPENED, PRE_BID_MEETING, CLARIFICATION_CLOSED, SUBMISSION_OPENED,
+  SUBMISSION_DEADLINE, OPENING, EXTENDED, CORRIGENDUM, CANCELLED, AWARDED, OTHER)`, `event_at
+  TIMESTAMPTZ NULL`, `title`, `description`, `source_reference`) — `UNIQUE(tender_id, event_type,
+  event_at)` (duplicate-event prevention), index `(tender_id, event_at)`.
+- `tender_corrigenda` (`tender_id FK`, `source_id FK NULL`, `source_reference`, `title`,
+  `description`, `published_at`, `effective_at NULL`, `source_url`, `document_id FK NULL` →
+  `tender_documents`, `affected_fields JSONB`) — index `(tender_id, published_at)`, CHECK
+  `effective_at >= published_at`.
+
+## 7. User features
+
+| Table | Key columns | Constraints / indexes |
+|---|---|---|
+| `watchlist_tenders` | `organization_id`, `user_id`, `tender_id`, `note` | `UNIQUE(organization_id, user_id, tender_id)`; index `(tender_id)` for closing-soon fan-out |
+| `follows` | `organization_id`, `user_id`, `target_type ENUM(PROCURING_ENTITY, CATEGORY, STATE, DISTRICT, KEYWORD)`, `target_id NULL`, `target_value NULL` | `UNIQUE(user_id, target_type, COALESCE(target_id::text, target_value))` |
+| `saved_searches` | `organization_id`, `created_by`, `name`, `criteria JSONB` (validated schema v1), `criteria_version`, `keywords` (indexed copy), `state_codes TEXT[]`, `category_ids UUID[]`, `is_shared`, `last_match_count`, `last_run_at`, soft delete | GIN `(state_codes)`, `(category_ids)` |
+| `alerts` | `saved_search_id FK`, `user_id`, `frequency ENUM(INSTANT, DAILY, WEEKLY)`, `channels TEXT[]` (`EMAIL`, `IN_APP`, later `PUSH`, `SMS`, `WHATSAPP`), `status ENUM(ACTIVE, PAUSED)`, `last_triggered_at`, `percolator_doc_id` | index `(status, frequency)` |
+| `alert_matches` | `alert_id`, `tender_id`, `event ENUM(NEW, UPDATED, CORRIGENDUM, CANCELLED, DOCUMENT_ADDED, CLOSING_SOON)`, `notified_at NULL`, `digest_id NULL` | `UNIQUE(alert_id, tender_id, event)` |
+| `notifications` | `user_id`, `category ENUM(TENDER_ALERT, DEADLINE, SYSTEM, SUBSCRIPTION, ACCOUNT)`, `title`, `body`, `data JSONB` (deep link), `dedupe_key`, `read_at`, `created_at` | `UNIQUE(user_id, dedupe_key)`; index `(user_id, created_at DESC)`; partial index `(user_id) WHERE read_at IS NULL` |
+| `notification_deliveries` | `notification_id`, `channel`, `status ENUM(QUEUED, SENT, FAILED, SKIPPED)`, `attempts`, `last_error`, `provider_message_id`, `sent_at` | index `(status, channel)` |
+| `notification_preferences` | `user_id PK`, `email_enabled`, `in_app_enabled`, per-category toggles JSONB, `quiet_hours JSONB` | |
+| `bids` | `organization_id`, `user_id`, `tender_id`, `stage ENUM(PREPARING, SUBMITTED, UNDER_EVALUATION, WON, LOST, WITHDRAWN)`, `bid_amount NUMERIC(18,2)`, `submitted_at`, `notes`, soft delete | `UNIQUE(organization_id, tender_id) WHERE deleted_at IS NULL` |
+
+## 8. Billing
+
+| Table | Key columns | Constraints / indexes |
+|---|---|---|
+| `plans` | `code` (`FREE, PRO, BUSINESS, ENTERPRISE`), `name`, `description`, `monthly_price`, `yearly_price` NUMERIC, `currency`, `is_public`, `is_active`, `sort_order`, `razorpay_plan_ids JSONB` | `UNIQUE(code)` |
+| `plan_entitlements` | `plan_id`, `feature_key` (`tender_views`, `saved_searches`, `alerts`, `document_downloads`, `history_days`, `advanced_filters`, `api_access`, `team_seats`, `alert_channels`), `limit_value BIGINT NULL` (NULL = unlimited), `period ENUM(NONE, DAY, MONTH)`, `bool_value NULL` | `UNIQUE(plan_id, feature_key)` |
+| `subscriptions` | `organization_id`, `plan_id`, `status ENUM(TRIALING, ACTIVE, PAST_DUE, CANCELLED, EXPIRED)`, `billing_cycle ENUM(MONTHLY, YEARLY)`, `current_period_start`, `current_period_end`, `cancel_at_period_end`, `provider`, `provider_subscription_id` | `UNIQUE(organization_id) WHERE status IN ('TRIALING','ACTIVE','PAST_DUE')`; `UNIQUE(provider, provider_subscription_id)` |
+| `payments` | `organization_id`, `subscription_id`, `provider`, `provider_order_id`, `provider_payment_id`, `amount`, `currency`, `status ENUM(CREATED, AUTHORIZED, CAPTURED, FAILED, REFUNDED)`, `method`, `failure_reason` | `UNIQUE(provider, provider_payment_id)`; `UNIQUE(provider, provider_order_id)` |
+| `invoices` | `organization_id`, `payment_id`, `number` (FY sequence e.g. `ATS/2026-27/000123`), `subtotal`, `gst_amount`, `total`, `currency`, `gstin_billed`, `status ENUM(DRAFT, ISSUED, PAID, VOID)`, `issued_at`, `pdf_file_id` | `UNIQUE(number)` |
+| `webhook_events` | `provider`, `provider_event_id`, `event_type`, `payload JSONB`, `signature_valid`, `received_at`, `processed_at`, `processing_error` | `UNIQUE(provider, provider_event_id)` |
+| `usage_counters` | `organization_id`, `feature_key`, `period_start DATE`, `count BIGINT` | `UNIQUE(organization_id, feature_key, period_start)`; increments via `INSERT … ON CONFLICT DO UPDATE` |
+
+## 9. Platform
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `audit_logs` | `actor_user_id`, `organization_id`, `action` (`USER_SUSPENDED`, `TENDER_UPDATED`, …), `resource_type`, `resource_id`, `old_value JSONB`, `new_value JSONB` (redacted), `ip INET`, `user_agent`, `request_id`, `created_at` | append-only (no UPDATE/DELETE grants for the app role); index `(resource_type, resource_id)`, `(actor_user_id, created_at DESC)`, `(action, created_at DESC)`; monthly partitions once volume warrants |
+| `outbox_events` | `aggregate_type`, `aggregate_id`, `event_type`, `payload JSONB`, `correlation_id`, `created_at`, `available_at`, `published_at NULL`, `attempts`, `last_error` | index `(published_at, available_at)`; relay claims rows with `FOR UPDATE SKIP LOCKED` and publishes to BullMQ; published rows deleted after `OUTBOX_RETENTION_DAYS` |
+| `job_schedules` | `key`, `queue`, `job_name`, `cron` \| `every_ms`, `timezone`, `payload JSONB`, `enabled` | `UNIQUE(key)`; reconciled into BullMQ job schedulers by the scheduler process |
+| `app_settings` | `key` PK, `value JSONB`, `updated_by` | admin-editable settings |
+| `support_tickets` | `organization_id`, `user_id`, `subject`, `message`, `status ENUM(OPEN, PENDING, RESOLVED, CLOSED)`, `assigned_to` | |
+| `contact_messages` | `name`, `email`, `subject`, `message`, `ip`, `handled_at` | public contact form; rate limited |
+| `daily_tender_stats` | `date`, `state_code`, `category_id`, `source_id`, `tenders_published`, `tenders_closing`, `value_published NUMERIC` | rollup refreshed by the analytics job |
+| `market_snapshots` | `computed_at`, `payload JSONB` | cached landing-page aggregates (map, value bands, top buyers) |
+| `search_events` | **Phase 7 as built**: `event_type` (`SEARCH_SUBMITTED, FILTER_APPLIED, FILTER_REMOVED, SORT_CHANGED, RESULT_OPENED, RESULT_SAVED, SEARCH_SAVED, SUGGESTION_SELECTED`), `user_id NULL` (no FK), `organization_id NULL`, `query_normalized`, `name`, `value`, `tender_id NULL`, `position`, `result_count`, `created_at` | append-only, closed shape (no free-form payload, no IP); purged daily beyond `SEARCH_EVENT_RETENTION_DAYS` (default 180) by `maintenance.search-events-purge`, batched |
+| `search_history` | **Phase 7**: `user_id` (FK), `organization_id NULL`, `query_normalized`, `filters JSONB`, `dedup_key`, `search_count`, `last_searched_at` | `UNIQUE(user_id, dedup_key)`; authenticated users only, capped at 200 per user; never shared (popular terms need >= 3 distinct users) |
+| `search_index_runs` | **Phase 7**: `kind` (`REINDEX`, `VERIFY`), `status`, `started_at`, `completed_at`, `processed`, `failed`, `details JSONB` | observability for `search:reindex` / `search:verify` and `/search/health` |
+| `analytics_events` | **Phase 10** (docs/ARCHITECTURE.md Sec 22): `event_name` (23-value enum), `anonymous_id`, `session_id NULL` (FK to `analytics_sessions`), `user_id NULL` (no FK), `organization_id NULL` (no FK), `entity_type NULL`, `entity_id NULL`, `path NULL`, `metadata JSONB` (closed per-event schema), `occurred_at` (clamped server-side), `received_at`, `correlation_id NULL` | no FK to users/organizations/tenders by design (see rationale in Sec 22.11); indexes `(event_name, occurred_at)`, `(organization_id, occurred_at)`, `(user_id, occurred_at)`, `(session_id)`, `(received_at)`; purged beyond `ANALYTICS_EVENT_RETENTION_DAYS` (default 90) by `analytics.purge-events`, batched |
+| `analytics_sessions` | **Phase 10**: `anonymous_id` (not unique - a browser gets a new row per timed-out session), `user_id NULL` (FK), `started_at`, `last_activity_at`, `ended_at NULL`, `landing_path`, `referrer_host` (host only), `utm_source/medium/campaign/term/content` (first-touch only), `page_view_count`, `event_count` | indexes `(user_id)`, `(last_activity_at)`, `(anonymous_id, last_activity_at DESC)`; same retention as `analytics_events` |
+| `analytics_daily_rollups` | **Phase 10**: `date` (UTC day), `metric` (one of 10 closed metric names), `dimension` (`'global'` or an organization id), `count` | `UNIQUE(date, metric, dimension)`; index `(metric, date)`; rebuilt idempotently (upsert, never increment) by `analytics.rollup`; retained `ANALYTICS_ROLLUP_RETENTION_DAYS` (default 400) |
+| `analytics_processing_runs` | **Phase 10**: `kind` (`ROLLUP`, `PURGE`), `status`, `started_at`, `completed_at`, `processed`, `failed`, `details JSONB` | observability for `analytics:rollup` / `analytics:purge-events`, mirrors `search_index_runs` |
+
+## 10. Migrations & data safety
+- Every schema change is a reviewed Prisma migration; destructive changes go expand → migrate data → contract across releases.
+- Raw SQL migrations for things Prisma can't express: partial unique indexes, CHECK constraints, generated `search_vector`, trigram indexes, append-only grants.
+- Backups: managed PITR (≥7 days) + nightly logical dump to object storage; restore drill each quarter. Object storage versioning enabled on the documents bucket.
