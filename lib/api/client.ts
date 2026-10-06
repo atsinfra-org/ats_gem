@@ -67,6 +67,13 @@ interface Envelope<T> {
 let accessToken: string | null = null;
 let refreshInFlight: Promise<boolean> | null = null;
 const sessionExpiredListeners = new Set<() => void>();
+const apiErrorListeners = new Set<(code: ErrorCode, status: number, path: string) => void>();
+
+/** Registers a callback fired for every failed request (a hook for analytics; never used for UI). Returns an unsubscribe function. */
+export function onApiError(listener: (code: ErrorCode, status: number, path: string) => void): () => void {
+  apiErrorListeners.add(listener);
+  return () => apiErrorListeners.delete(listener);
+}
 
 export function setAccessToken(token: string | null): void {
   accessToken = token;
@@ -168,6 +175,7 @@ async function rawRequest<T>(path: string, options: RequestOptions, attempt: num
     sessionExpiredListeners.forEach((listener) => listener());
   }
 
+  apiErrorListeners.forEach((listener) => listener(code, res.status, path));
   throw new ApiError(code, body?.error?.message ?? `Request failed with status ${res.status}.`, res.status, body?.error?.details);
 }
 

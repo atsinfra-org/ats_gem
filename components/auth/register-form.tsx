@@ -13,6 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { register as registerAccount } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
 import { useSession } from "@/lib/auth/session-context";
+import { track } from "@/lib/analytics/client";
 
 const schema = z
   .object({
@@ -42,8 +43,10 @@ export function RegisterForm({ onSuccess }: { onSuccess: (requiresEmailVerificat
 
   async function onSubmit(values: FormValues) {
     setFormError(null);
+    track("REGISTRATION_STARTED");
     try {
       const result = await registerAccount({ name: values.name, email: values.email, password: values.password, acceptTerms: true });
+      track("REGISTRATION_COMPLETED");
       await refreshUser();
       onSuccess(result.requiresEmailVerification);
     } catch (err) {

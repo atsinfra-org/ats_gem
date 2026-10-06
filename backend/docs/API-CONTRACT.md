@@ -423,3 +423,17 @@ Realtime strategy: **polling** (count on load, on focus and at most every 60 s w
 | Admin pages (`lib/mock/users|companies|sources|audit-logs`) | `/admin/*` |
 
 Frontend type adjustments needed at integration time: money becomes `Money` objects (not numbers); `Tender.documentFee` → `tenderFee`; tender `status` values become UPPER_SNAKE; `state` becomes `{ code, name }`.
+## 15. Analytics & tracking — `/analytics` (Phase 10)
+
+Authoritative behaviour and rationale: ARCHITECTURE Sec 22. Ingestion is public; reporting is authorized per the existing RBAC/organization model (no parallel permission system).
+
+| Method & path | Auth | Notes |
+|---|---|---|
+| `POST /analytics/events` | `@Public()`, `@RateLimit('analytics')`, 202 | Body: `{ events: TrackEvent[] }`, up to `ANALYTICS_MAX_BATCH_SIZE` (default 20, hard cap 20) per request. Each event: `name` (one of the 23 closed `AnalyticsEventName` values), `anonymousId` (client-generated, `^[A-Za-z0-9_-]{8,64}$`), optional `path` (pathname only, <= 300 chars), optional `metadata` (validated per `name`, see ARCHITECTURE Sec 22.3), optional `entityType`/`entityId`, optional `occurredAt` (clamped server-side to `[now-24h, now+5m]`), and first-event-only session attribution fields (`landingPath`, `referrerHost`, `utmSource/Medium/Campaign/Term/Content`). A bearer token, when present, attaches the caller's user/organization - these are never accepted as body fields. Response: `{ accepted, rejected }`; never a 5xx - a database or validation failure is reported as `rejected`, not an error. |
+| `GET /analytics/me/summary` | user | `?from=&to=` (date-only, default trailing 30 days, max 366-day span). The caller's own event counts by type. |
+| `GET /analytics/organizations/current/overview` | `@RequireOrgRole('VIEWER')` | `?from=&to=`. Daily-rollup totals for the caller's own organization. |
+| `GET /analytics/admin/overview` | `@RequirePermissions('analytics.view')` | `?from=&to=`. Platform-wide (`dimension=global`) daily-rollup totals across the 10 metrics in ARCHITECTURE Sec 22.6. |
+| `GET /analytics/admin/trends` | `@RequirePermissions('analytics.view')` | `?metric=&from=&to=` (metric is one of the 10 rollup metrics; unknown metric or range = `400`). One daily-count series. |
+
+Raw `analytics_events` rows are never exposed by any endpoint - only aggregates (`analytics_daily_rollups`) and a caller's own summary. `from`/`to` outside a sane range, inverted, or malformed return `400 VALIDATION_FAILED`.
+

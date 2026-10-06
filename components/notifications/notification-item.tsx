@@ -5,6 +5,7 @@ import { AlarmClock, Bell, FileWarning, Search, ShieldAlert, RefreshCw, Ban, Mai
 import { formatDistanceToNow } from "date-fns";
 import type { AppNotification } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
+import { track } from "@/lib/analytics/client";
 
 export const TYPE_LABELS: Record<string, string> = {
   SAVED_SEARCH_MATCH: "Saved search match",
@@ -75,16 +76,21 @@ export function NotificationItem({
     </>
   );
 
+  const handleClick = () => {
+    track("NOTIFICATION_CLICKED", { entityType: "notification", entityId: notification.id, metadata: { notificationId: notification.id, type: notification.type } });
+    onRead?.();
+  };
+
   const rowClass = cn("flex min-w-0 flex-1 items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary");
 
   return (
     <li className={cn("flex items-stretch border-b border-border last:border-0", !notification.isRead && "bg-[color-mix(in_srgb,var(--color-primary)_4%,transparent)]")}>
       {linked ? (
-        <Link href={`/tenders/${notification.entityId}`} onClick={onRead} className={rowClass}>
+        <Link href={`/tenders/${notification.entityId}`} onClick={handleClick} className={rowClass}>
           {body}
         </Link>
       ) : (
-        <button type="button" onClick={onRead} className={rowClass}>
+        <button type="button" onClick={handleClick} className={rowClass}>
           {body}
         </button>
       )}

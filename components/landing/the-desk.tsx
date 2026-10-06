@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import type { ClosingItem, MarketSnapshot } from "@/lib/types";
 import { SectionHeading } from "@/components/landing/section-heading";
 import { ClosingBoard } from "@/components/landing/closing-board";
-import { Elapsed } from "@/components/landing/elapsed";
 import { cn } from "@/lib/utils";
 
 function compact(n: number) {
@@ -29,13 +28,11 @@ const statusStyle = {
 
 export function TheDesk({ snapshot, closing }: { snapshot: MarketSnapshot; closing: ClosingItem[] }) {
   const maxBuyer = Math.max(...snapshot.topBuyers.map((b) => b.live));
-  const maxBand = Math.max(1, ...snapshot.valueBands.map((b) => b.count));
+  const maxBand = Math.max(...snapshot.valueBands.map((b) => b.count));
   const totalBands = snapshot.valueBands.reduce((sum, b) => sum + b.count, 0);
-  const smallTicketShare = totalBands
-    ? Math.round(
-        (snapshot.valueBands.filter((b) => b.underOneCrore).reduce((sum, b) => sum + b.count, 0) / totalBands) * 100
-      )
-    : 0;
+  const smallTicketShare = Math.round(
+    (snapshot.valueBands.filter((b) => b.underOneCrore).reduce((sum, b) => sum + b.count, 0) / totalBands) * 100
+  );
 
   return (
     <section className="bg-panel text-white">
@@ -60,7 +57,7 @@ export function TheDesk({ snapshot, closing }: { snapshot: MarketSnapshot; closi
           <DeskCell title="Top buyers" meta="Live tenders">
             <ol className="space-y-4">
               {snapshot.topBuyers.map((b, i) => (
-                <li key={`${b.name}-${i}`}>
+                <li key={b.short}>
                   <div className="flex items-baseline gap-3 text-sm">
                     <span className="font-mono text-[11px] text-white/55">{String(i + 1).padStart(2, "0")}</span>
                     <span className="flex-1 truncate text-white/85" title={b.name}>
@@ -108,9 +105,7 @@ export function TheDesk({ snapshot, closing }: { snapshot: MarketSnapshot; closi
                   <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", statusStyle[p.status].dot)} />
                   <span className="sr-only">{statusStyle[p.status].label}:</span>
                   <span className="flex-1 truncate text-white/85">{p.name}</span>
-                  <span className="font-mono text-[11px] text-white/55">
-                    <Elapsed at={p.lastSyncedAt} />
-                  </span>
+                  <span className="font-mono text-[11px] text-white/55">{p.syncedMinutesAgo}m</span>
                   <span className="w-12 text-right font-mono text-xs tabular-nums text-white/70">
                     {p.today.toLocaleString("en-IN")}
                   </span>

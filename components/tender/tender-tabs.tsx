@@ -10,6 +10,7 @@ import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { ApiErrorState } from "@/components/states/status-error";
 import { useFullList } from "@/lib/hooks/use-full-list";
+import { track } from "@/lib/analytics/client";
 import { EMBEDDED_PREVIEW_CAP } from "@/lib/api/tender-parts";
 import type { TenderDetail, TenderDocumentSummary } from "@/lib/api/types";
 
@@ -251,7 +252,13 @@ export function TenderTabs(
 
   return (
     <>
-      <Tabs defaultValue="overview">
+      <Tabs
+        defaultValue="overview"
+        onValueChange={(v) => {
+          if (v === "corrigenda" && tender.corrigenda[0]) track("TENDER_CORRIGENDUM_VIEWED", { entityType: "tender", entityId: tender.id, metadata: { tenderId: tender.id, corrigendumId: tender.corrigenda[0].id } });
+          else if (v === "versions") track("TENDER_VERSION_VIEWED", { entityType: "tender", entityId: tender.id, metadata: { tenderId: tender.id } });
+        }}
+      >
         <TabsList className="flex-wrap h-auto">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="requirements">Requirements</TabsTrigger>
@@ -285,7 +292,7 @@ export function TenderTabs(
                 <div className="flex justify-between"><dt className="text-muted-foreground">Last synced</dt><dd className="text-foreground">{format(new Date(tender.lastSyncedAt), "dd MMM yyyy, h:mm a")}</dd></div>
               </dl>
               {tender.primarySourceUrl && (
-                <a href={tender.primarySourceUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs text-primary hover:underline">
+                <a href={tender.primarySourceUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs text-primary hover:underline" onClick={() => track("TENDER_SOURCE_OPENED", { entityType: "tender", entityId: tender.id, metadata: { tenderId: tender.id } })}>
                   View on source portal
                 </a>
               )}

@@ -10,6 +10,7 @@ import { OutboxModule, OutboxRelayModule } from './outbox/outbox.module';
 import { OutboxRelay } from './outbox/outbox.relay';
 import { QueuesModule } from './queues/queues.module';
 import { RedisModule } from './redis/redis.module';
+import { AnalyticsWorkerModule } from './analytics/analytics.module';
 import { NotificationsWorkerModule } from './notifications/notifications.module';
 import { SearchIndexingModule } from './search/search-indexing.module';
 import { PROCESS_HEALTH, ProcessHealthServer, type ProcessHealthOptions } from './workers/process-health.server';
@@ -37,6 +38,7 @@ export const WORKER_DEFAULT_HEALTH_PORT = 4001;
     SearchIndexingModule,
     EmailModule,
     NotificationsWorkerModule,
+    AnalyticsWorkerModule,
   ],
   providers: [
     {

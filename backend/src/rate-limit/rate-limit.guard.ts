@@ -46,6 +46,8 @@ export class RateLimitGuard implements CanActivate {
     switch (policy) {
       case 'search':
         return { limit: this.config.get('RATE_LIMIT_SEARCH_MAX'), windowSeconds: this.config.get('RATE_LIMIT_SEARCH_WINDOW_SECONDS') };
+      case 'analytics':
+        return { limit: this.config.get('RATE_LIMIT_ANALYTICS_MAX'), windowSeconds: this.config.get('RATE_LIMIT_ANALYTICS_WINDOW_SECONDS') };
       case 'auth':
         return { limit: this.config.get('RATE_LIMIT_AUTH_MAX'), windowSeconds: this.config.get('RATE_LIMIT_AUTH_WINDOW_MINUTES') * 60 };
     }

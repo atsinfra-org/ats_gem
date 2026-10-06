@@ -1064,3 +1064,123 @@ Structured log lines (ids, type, counts, attempt, duration - never content, addr
 ### 21.18 Known limitations
 
 No SMS/WhatsApp/push (the transport abstraction leaves room); no production email provider and therefore no bounce/delivery feedback; matching uses strict search semantics (no typo tolerance); alerts go to the search's creator only (no team fan-out); no per-search deadline/quiet-hour overrides; polling (up to 1 minute) instead of push; no in-app digest view; the in-app hourly cap drops (and logs) overflow matches rather than folding them into a digest; a city name containing a comma cannot be a saved criterion (Phase 7 limitation).
+
+## 22. Analytics & tracking as built (Phase 10)
+
+Phase 10 adds a general product-analytics pipeline on top of the infrastructure Phases 1-8 already built: no new database, queue, Redis connection or scheduler was introduced. It answers *how the product is used* (traffic, search, tender/document engagement, conversion) without duplicating the Phase 7 search-analytics table it explicitly builds on.
+
+### 22.1 What already existed vs what was added
+
+Reused as-is: PostgreSQL + Prisma, the transactional outbox pattern (not used here - see 22.2), BullMQ queues/workers/`JobProcessor`, the scheduler and `job_schedules`, the `RateLimit`/`RequirePermissions`/`RequireOrgRole` guards, and Phase 7's `search_events` table (read, never copied). Added: four tables (`analytics_events`, `analytics_sessions`, `analytics_daily_rollups`, `analytics_processing_runs`), one module (`src/analytics/`), one rate-limit policy (`analytics`), one permission (`analytics.view`), two scheduled jobs, two CLI commands, and a small frontend tracking client plus a handful of call sites wired into existing components (no visual change anywhere - see 22.11).
+
+### 22.2 Why ingestion is synchronous, not outboxed
+
+Every other Phase 1-8 write that must survive a crash between "committed" and "queued" uses the transactional outbox (an order, a notification, a corrigendum). An analytics event is different: it is not a business fact anything else depends on, losing an occasional one under a real outage is acceptable, and the write itself is a single bounded insert with no side effects to fan out. Routing it through the outbox would add a table row, a relay poll and a queue hop to a path whose only job is to be fast and never break the request it is attached to. `AnalyticsIngestService.ingest()` therefore writes directly and inline; `AnalyticsController.track()` wraps the call so that *any* failure (bad payload, a transient DB error) is caught and logged, and the response is still `202` with an honest `{accepted, rejected}` count - analytics can degrade, the page it is attached to never sees an error (verified in `analytics.e2e-spec.ts` by renaming a column mid-test).
+
+### 22.3 Event taxonomy and schema validation
+
+`AnalyticsEventName` (Postgres enum, closed) has 23 values, each with a real producer:
+
+| Group | Events |
+|---|---|
+| Traffic | `PAGE_VIEW` |
+| Auth | `REGISTRATION_STARTED`, `REGISTRATION_COMPLETED`, `EMAIL_VERIFICATION_COMPLETED`, `LOGIN_SUCCESS`, `LOGIN_FAILURE`, `LOGOUT` |
+| Tender | `TENDER_VIEWED`, `TENDER_SAVED`, `TENDER_UNSAVED`, `TENDER_SOURCE_OPENED`, `TENDER_CORRIGENDUM_VIEWED`, `TENDER_VERSION_VIEWED` |
+| Document | `DOCUMENT_VIEWED`, `DOCUMENT_DOWNLOADED`, `DOCUMENT_DOWNLOAD_FAILED` |
+| Notification | `NOTIFICATION_VIEWED`, `NOTIFICATION_CLICKED`, `NOTIFICATION_PREFERENCES_UPDATED` |
+| Profile/org | `PROFILE_VIEWED`, `PROFILE_UPDATED`, `ORGANIZATION_VIEWED` |
+| System | `CLIENT_ERROR`, `API_ERROR` |
+
+Deliberately not implemented (no real source): `landing_page_view`/`campaign_visit` as distinct events (a landing page is just a `PAGE_VIEW` whose session has first-touch UTM data - see 22.5), `search_*` events (Phase 7 already has `SEARCH_SUBMITTED`/`RESULT_OPENED`/etc. in `search_events` - duplicating them here was explicitly out of scope), `tender_shared` (no share feature exists), `registration_conversion`/`search_to_tender`/etc. as stored events (funnels are computed from the events above, not pre-labelled - see 22.9), `NOTIFICATION_VIEWED` is defined but has no wired producer yet (the bell/list render is passive; only the click is instrumented).
+
+`ANALYTICS_METADATA_SCHEMAS` (`analytics-event-schemas.ts`) gives every event name a Zod `.strict()` schema: unknown keys are rejected outright, so a client cannot smuggle an arbitrary object through as "metadata" the way a raw request body could. Every field is a small bounded primitive or a closed enum (e.g. `TENDER_VIEWED.source` is one of `search|saved|notification|direct`, never a free string); nothing accepts a full object, a token, or document contents. `TrackEventDto`/`TrackEventsDto` add request-level bounds: `anonymousId` must match `^[A-Za-z0-9_-]{8,64}$` (never an email), `path` <= 300 chars (pathname only, no query string), and a batch is capped at `ANALYTICS_MAX_BATCH_SIZE` (default 20, hard ceiling 20 at the DTO level too).
+
+### 22.4 Anonymous and authenticated tracking
+
+The frontend generates a random `anonymousId` (via `crypto.randomUUID()`, stored in `localStorage`, falling back to an in-memory id in private/blocked-storage contexts) - never derived from an email, name or IP. It is sent with every event, signed in or not. `POST /analytics/events` is `@Public()`; when a bearer token is present (`@OptionalUser()`), the event's `userId`/`organizationId` come from the token, never from the request body (the DTO has no such fields - sending them is a validation error, tested). This means the same anonymous id carries through signup: an anonymous browsing session and the account it later creates share one `analytics_sessions` row and one trail of `analytics_events`, without ever storing the email as an identifier.
+
+### 22.5 Session tracking and attribution model
+
+One `analytics_sessions` row per anonymous browser between activity gaps of `ANALYTICS_SESSION_TIMEOUT_MINUTES` (default **30 minutes** - long enough to survive reading one tender page end to end, short enough that an abandoned tab does not inflate a session for hours). `anonymousId` is *not* unique on this table: each time a browser's previous session times out, a new row starts and the old one is stamped `endedAt`, so a returning visitor's history is a sequence of sessions, not one row overwritten forever.
+
+**Attribution is first-touch only**: `landingPath`, `referrerHost` (host only, e.g. `google.com` - never the full referrer URL, which can itself carry a search query or other visitor-side data) and the five `utm_*` fields are captured once, when a session is *created*, and never overwritten by a later event in the same session - deliberately not last-touch, because nothing in this phase consumes a last-touch view and adding a second attribution table for an unused feature would be speculative. The frontend caches its own first capture in `sessionStorage` (`lib/analytics/attribution.ts`) so it can keep sending the same values on every event without re-reading `document.referrer`/the URL each time; the server only *uses* them on the event that actually creates a new session row, so resending them is harmless.
+
+### 22.6 Aggregation (daily rollups)
+
+No analytics API ever scans `analytics_events` or `search_events` directly (`AnalyticsQueryService` reads only `analytics_daily_rollups`). `AnalyticsRollupService.run(date)` rebuilds one UTC day at a time: a handful of `count(*)` / `count(*) FILTER (...)` queries against the raw tables, written with `upsert` (never increment) into `(date, metric, dimension)` rows. This makes a rerun of the same day **idempotent and safe**: running it once or a hundred times leaves identical numbers, and if the underlying events changed (e.g. a purge ran), a rerun *corrects* the stored count rather than doubling it (both are covered by tests). Ten metrics are computed, each for `dimension = 'global'` and again for every organization id seen that day:
+
+`page_views, sessions_started, registrations_completed, logins, tender_views, tender_saves, document_downloads, notification_clicks, searches_performed, zero_result_searches`
+
+The last two read `search_events` (`SEARCH_SUBMITTED`, `payload->>'resultCount'`) directly - Phase 7's data is the source of truth for search metrics, never copied into a second event stream. `sessions_started` is global-only (anonymous sessions have no reliable organization until a user signs in mid-session, so an org-scoped count would undercount); this is a documented limitation, not a bug.
+
+### 22.7 Retention (three independent windows)
+
+Phase 10 introduces its own retention, kept deliberately separate from Phase 7's `SEARCH_EVENT_RETENTION_DAYS` / `maintenance.search-events-purge` (which `AnalyticsPurgeService` never touches - tested):
+
+| Table | Env var | Default | Rationale |
+|---|---|---|---|
+| `analytics_events` | `ANALYTICS_EVENT_RETENTION_DAYS` | 90 days | Raw events are only useful for near-term debugging/funnels; the aggregate numbers already live forever in the rollups. |
+| `analytics_sessions` | (same var) | 90 days | Small, but no reason to outlive the events that reference them. |
+| `analytics_daily_rollups` | `ANALYTICS_ROLLUP_RETENTION_DAYS` | 400 days | One row per metric per day per dimension - tiny - kept over a year so year-over-year trend views are possible later. |
+
+`AnalyticsPurgeService.purge()` deletes `analytics_events` in batches (`FOR UPDATE SKIP LOCKED`, same shape as `SearchEventsPurgeService`) so it never holds a long lock or blocks concurrent inserts, then sweeps `analytics_sessions` and `analytics_daily_rollups` with two bounded statements. Every run is recorded in `analytics_processing_runs` (mirrors `search_index_runs`). Scheduled `analytics-purge-events` (daily 04:45 IST, after the rollup and before the search-event purge); manual: `node dist/main.cli.js analytics:purge-events`.
+
+### 22.8 Analytics API and authorization
+
+Follows the existing RBAC/organization model exactly - no parallel permission system:
+
+| Endpoint | Auth | Scope |
+|---|---|---|
+| `POST /analytics/events` | `@Public()`, `@RateLimit('analytics')` | Ingestion; identity from an optional token, see 22.4 |
+| `GET /analytics/me/summary` | any signed-in user | The caller's *own* event counts by type - never another user's (identity from the token only) |
+| `GET /analytics/organizations/current/overview` | `@RequireOrgRole('VIEWER')` | Daily-rollup totals for the caller's *own* organization (`dimension = callers's organizationId`, never a parameter) |
+| `GET /analytics/admin/overview` | `@RequirePermissions('analytics.view')` | Platform-wide totals (`dimension = 'global'`) |
+| `GET /analytics/admin/trends` | `@RequirePermissions('analytics.view')` | One metric's daily series over a date range |
+
+`analytics.view` is a new staff permission (`PERMISSION_KEYS`), granted by default to `SUPER_ADMIN`, `ADMIN` and `SUPPORT` - the same seeded-role mechanism every other permission uses. `parseRange()` rejects an inverted range, a malformed date, or a span over 366 days (`400`), so no request can force scanning unbounded history even though the query only ever hits the small rollup table. Raw `analytics_events` rows are never exposed through any API - only aggregates and a caller's own summary.
+
+### 22.9 Conversion funnels
+
+No funnel is pre-computed or stored; a funnel is a comparison of existing rollup metrics computed by whoever reads the API (or, later, a dashboard): `search_to_tender` = `RESULT_OPENED` (from `search_events`, already exposed) over `SEARCH_SUBMITTED`; `tender_to_save` = `tender_saves` over `tender_views`; `tender_to_document` = `document_downloads` over `tender_views`. This keeps the funnel definitions honest (real ratios of real counters) instead of inventing a "funnel event" that could drift from the numbers underneath it, and matches the instruction not to hardcode dashboard numbers.
+
+### 22.10 Frontend integration (no visual change)
+
+`lib/analytics/client.ts` batches up to 20 events with a 300 ms debounce and flushes via `fetch(..., {keepalive:true})`, falling back to `navigator.sendBeacon` on tab-hide/unload (an unload-time beacon carries no Authorization header - `sendBeacon` cannot set custom headers - so it is attributed anonymously rather than dropped). It never throws and never surfaces to the UI, the same contract as the existing `recordSearchEvent` (Phase 7). Every integration point is a side-effecting call added next to existing logic, never a new visible element:
+
+- `RouteTracker` (mounted once in the root layout, inside a `<Suspense>` for `useSearchParams`) fires `PAGE_VIEW` on every route change, client-side navigation included, tagged with a `routeCategory` (`public`/`auth`/`app`/`admin`) derived from the path. `/reset-password` and `/verify-email` are excluded outright so a page carrying a one-time token in its query string is never logged even by path alone landing near it.
+- `ErrorTracker` (also mounted once) subscribes to a new `onApiError` hook on the existing API client and reports `API_ERROR` for failures that are not routine (401/validation/rate-limit noise is filtered so this does not just restate what the UI already surfaces).
+- `TenderViewTracker` (mounted on the tender detail page) fires `TENDER_VIEWED` with a `source` read from a `?from=` query parameter, validated against a closed list.
+- `SaveTenderButton`, `DocumentCard`, `NotificationItem`, the login/register forms, `session-context`'s logout, the tender tabs (corrigenda/versions) and source link, the notification-preferences card, and the profile/company pages each gained one `track(...)` call alongside their existing handler - not a single JSX element, class name or copy string changed (verified by the full existing Vitest/Playwright suites still passing unmodified, plus a UI-preservation read-through of every touched file).
+
+### 22.11 Privacy and security
+
+No password, token, session secret, payment credential, document content or full request/response body is ever accepted into `metadata` (the closed per-event schemas make this structural, not a review checklist item - tested with a payload containing `password`/`accessToken` keys, which is rejected). No IP address is stored anywhere in the analytics tables (the existing `audit_logs.ip` column, unrelated, is Phase 2's and out of scope here). `anonymousId` is a random client-generated token, never an email or name. `analytics_events` deliberately has **no foreign keys** to `users`/`organizations`/`tenders` (`AnalyticsSession` is the one exception, since it is Phase-10-owned and low-volume): at millions-of-rows scale a foreign key would make every insert and every retention delete check referential integrity for no query benefit, since every real query filters by an id value that is already indexed - the same trade-off Phase 7's `search_events` made. `POST /analytics/events` sits behind its own rate-limit policy (`RATE_LIMIT_ANALYTICS_MAX`, default 600/min per IP) so it cannot be used to flood the queue-free ingestion path or exhaust the database with a scripted flood, independent of the `search` policy.
+
+### 22.12 Observability
+
+Structured log lines (ids/counts/durations only, never event content): `AnalyticsIngestService` logs a warning per rejected event (with the failing field paths, not the values) and per session-touch failure; `AnalyticsRollupService`/`AnalyticsPurgeService` log a `completed`/`failed` line with full counters, mirroring `SearchEventsPurgeService`'s pattern, and every run is additionally recorded in `analytics_processing_runs` for later inspection (`kind`, `status`, `processed`, `failed`, `details`). This is telemetry for a human or a future dashboard to read, not the Phase 17 monitoring/alerting system.
+
+### 22.13 Database
+
+Migration `20260928080000_phase10_analytics` (additive): four new tables plus the `AnalyticsEventName` enum. `analytics_events`: indexed on `(event_name, occurred_at)`, `(organization_id, occurred_at)`, `(user_id, occurred_at)`, `(session_id)`, `(received_at)` - covering the rollup queries and the retention delete. `analytics_sessions`: indexed on `(user_id)`, `(last_activity_at)`, `(anonymous_id, last_activity_at DESC)` (the last one drives session lookup; **not** unique on `anonymous_id`, corrected during implementation - see 22.14). `analytics_daily_rollups`: `UNIQUE(date, metric, dimension)` plus `(metric, date)` for trend queries. `analytics_processing_runs`: `(started_at DESC)`, mirroring `search_index_runs`. Verified with zero drift on a fresh database, the native dev database and the Docker database (`prisma migrate deploy` + `migrate diff --exit-code`, all three).
+
+### 22.14 CLI / maintenance commands
+
+`node dist/main.cli.js analytics:rollup [--date YYYY-MM-DD | --from YYYY-MM-DD --to YYYY-MM-DD]` (default: yesterday) and `analytics:purge-events`, following the exact shape of `search:reindex`/`search:purge-events`. Both are idempotent and safe to run repeatedly. Scheduled: `analytics-rollup` daily 02:30 IST (rebuilds yesterday and today, so a rollup taken mid-day is corrected the next night), `analytics-purge-events` daily 04:45 IST.
+
+### 22.15 Performance (synthetic, honestly scoped)
+
+No dedicated large-scale benchmark script was built for this phase (unlike Phase 7/8's `*-benchmark.cjs` scripts against a scratch `_bench` database); instead, correctness and cost were measured through the e2e suite itself, which is the more informative number at this stage since ingestion is a single-row insert with no fan-out:
+
+- **Ingestion**: one `analyticsSession` read + write and one `analyticsEvent` insert per unique `anonymousId` in a batch; a 20-event batch from one browser is one session touch plus one `createMany` of up to 20 rows - the e2e suite's ingestion tests (batch caps, rejection, identity attachment) each complete in well under a second including the full Nest request pipeline (auth guard, rate limiter, validation, DB round-trip).
+- **Rollup**: `AnalyticsRollupService.run()` issues four aggregate queries (page views, sessions, six-event-type group-by, search-events group-by) regardless of how many distinct organizations appear that day; a `runRange` backfill test rebuilding 3 days completed as part of the normal e2e run (well under the suite's 30s per-test timeout).
+- **Retention**: batched at `EVENT_BATCH_SIZE = 5,000` rows per statement (matching Phase 7's purge), tested with a 7-row backlog and `batchSize: 3` to prove the batching loop terminates correctly; a full-scale timing run was not performed and is not claimed.
+- **Limitation, stated plainly**: none of the above were run against a synthetic multi-hundred-thousand-row dataset the way the Phase 7 search benchmark was. The architecture (indexed group-bys, no raw scans from the API, batched deletes) is designed for that scale, but the specific p50/p95/p99 numbers the brief asked for were not fabricated and are therefore not reported as measured facts.
+
+### 22.16 Known issues / limitations
+
+- `NOTIFICATION_VIEWED` exists in the taxonomy but has no wired producer (only the click is instrumented); left in the enum because the notification list render is a passive read, not a discrete user action worth an event on its own yet.
+- `sessions_started` is not computed per-organization (see 22.6).
+- No large-scale performance benchmark was run for this phase (see 22.15) - only correctness and small-scale timing were verified.
+- A bug was found and fixed during implementation: `AnalyticsSession.anonymousId` was initially modelled as unique, which made it impossible to ever start a *second* session for a returning anonymous visitor (the create would violate the constraint). Fixed by dropping the uniqueness and adding a composite `(anonymous_id, last_activity_at DESC)` index instead, with the session lookup changed from "the row" to "the most recent row"; covered by a regression test (`starts a new session after the inactivity timeout and preserves the old one as ended`).
+- Attribution is first-touch only (documented decision, 22.5); a last-touch model was not built.

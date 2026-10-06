@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { login } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
 import { useSession } from "@/lib/auth/session-context";
+import { track } from "@/lib/analytics/client";
 
 const schema = z.object({
   email: z.string().min(1, "Email is required.").email("Please enter a valid email address."),
@@ -39,10 +40,12 @@ export function LoginForm({
     setFormError(null);
     try {
       await login(values);
+      track("LOGIN_SUCCESS");
       await refreshUser();
       onSuccess();
     } catch (err) {
       if (err instanceof ApiError) {
+        track("LOGIN_FAILURE", { metadata: { reason: err.code === "ACCOUNT_LOCKED" ? "account_locked" : err.code === "ACCOUNT_SUSPENDED" ? "account_suspended" : "invalid_credentials" } });
         if (err.code === "INVALID_CREDENTIALS") setFormError("Incorrect email or password.");
         else if (err.code === "ACCOUNT_LOCKED") setFormError("Too many failed attempts. Try again later.");
         else if (err.code === "ACCOUNT_SUSPENDED") setFormError("This account has been suspended.");

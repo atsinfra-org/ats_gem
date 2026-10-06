@@ -67,6 +67,22 @@ const DEFAULT_SCHEDULES: Prisma.JobScheduleCreateInput[] = [
     description: 'Send one daily digest email per user for saved-search alerts waiting as digest items (daily 08:00 IST).',
   },
   {
+    key: 'analytics-rollup',
+    queue: QueueName.MAINTENANCE,
+    jobName: 'analytics.rollup',
+    cron: '30 2 * * *',
+    timezone: 'Asia/Kolkata',
+    description: 'Rebuild yesterday\'s analytics daily rollups from raw events (daily 02:30 IST, before the search/notification cleanups).',
+  },
+  {
+    key: 'analytics-purge-events',
+    queue: QueueName.MAINTENANCE,
+    jobName: 'analytics.purge-events',
+    cron: '45 4 * * *',
+    timezone: 'Asia/Kolkata',
+    description: 'Delete raw analytics events/sessions and old rollups beyond their configured retention (daily 04:45 IST).',
+  },
+  {
     key: 'sources-health-check',
     queue: QueueName.MAINTENANCE,
     jobName: 'maintenance.sources-health-check',

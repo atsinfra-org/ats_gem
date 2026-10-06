@@ -6,6 +6,8 @@ import { SeedService } from './database/seed.service';
 import { QueueHealthService } from './queues/queue-health.service';
 import { SchedulerService } from './scheduler/scheduler.service';
 import { SearchIndexService } from './search/search-index.service';
+import { AnalyticsPurgeService } from './analytics/analytics-purge.service';
+import { AnalyticsRollupService } from './analytics/analytics-rollup.service';
 import { SearchEventsPurgeService } from './search/search-events-purge.service';
 import { BackfillService } from './tenders/backfill.service';
 
@@ -19,6 +21,8 @@ Commands:
   search:reindex [--resume] [--batch N]  Rebuild every tender search vector (idempotent; resumable after a failure)
   search:verify        Compare stored search vectors with a fresh computation (read-only)
   search:purge-events  Delete search analytics events older than SEARCH_EVENT_RETENTION_DAYS (batched, idempotent)
+  analytics:rollup [--date YYYY-MM-DD | --from YYYY-MM-DD --to YYYY-MM-DD]  Rebuild analytics daily rollups (default: yesterday)
+  analytics:purge-events  Delete raw analytics events/sessions/old rollups beyond their retention (batched, idempotent)
   backfill:phase3      Resolve procuring entities and quality issues for pre-Phase-3 tenders (idempotent)
   backfill:phase4      Seed timeline events and quality issues for pre-Phase-4 tenders (idempotent)`;
 
@@ -35,6 +39,15 @@ const COMMANDS: Record<string, Command> = {
   'search:reindex': (app, args) => app.get(SearchIndexService).reindex({ resume: args.includes('--resume'), batchSize: Number(args[args.indexOf('--batch') + 1]) || undefined, onProgress: (n) => console.error(`reindexed ${n}`) }),
   'search:verify': (app) => app.get(SearchIndexService).verify(),
   'search:purge-events': (app) => app.get(SearchEventsPurgeService).purge(),
+  'analytics:rollup': (app, args) => {
+    const dateArg = args[args.indexOf('--date') + 1];
+    const fromArg = args[args.indexOf('--from') + 1];
+    const toArg = args[args.indexOf('--to') + 1];
+    const rollup = app.get(AnalyticsRollupService);
+    if (fromArg && toArg) return rollup.runRange(new Date(fromArg), new Date(toArg));
+    return rollup.run(dateArg ? new Date(dateArg) : new Date(Date.now() - 86_400_000));
+  },
+  'analytics:purge-events': (app) => app.get(AnalyticsPurgeService).purge(),
   'backfill:phase3': (app) => app.get(BackfillService).run(),
   'backfill:phase4': (app) => app.get(BackfillService).runPhase4(),
 };

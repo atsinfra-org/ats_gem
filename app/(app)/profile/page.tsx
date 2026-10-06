@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatDistanceToNow } from "date-fns";
 import { useSession } from "@/lib/auth/session-context";
 import { apiRequest, ApiError } from "@/lib/api/client";
+import { track } from "@/lib/analytics/client";
 import { changePassword, listSessions, resendVerification, revokeSession } from "@/lib/api/auth";
 import { NotificationPreferencesCard } from "@/components/notifications/notification-preferences-card";
 import type { SessionInfo } from "@/lib/api/types";
@@ -61,6 +62,7 @@ export default function ProfilePage() {
     setSavingProfile(true);
     try {
       await apiRequest("/me", { method: "PATCH", body: { name, phone: phone || undefined, designation: designation || undefined } });
+      track("PROFILE_UPDATED");
       await refreshUser();
       toast.success("Profile updated");
     } catch (err) {
@@ -120,6 +122,11 @@ export default function ProfilePage() {
       el?.focus({ preventScroll: true });
     }
   }, [user]);
+
+  React.useEffect(() => {
+    if (user) track("PROFILE_VIEWED");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!user]);
 
   if (!user) return null;
 

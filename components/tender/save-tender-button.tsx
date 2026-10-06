@@ -3,6 +3,7 @@
 import { Bookmark } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useWatchlist } from "@/lib/store/watchlist-store";
+import { track } from "@/lib/analytics/client";
 import { cn } from "@/lib/utils";
 
 export function SaveTenderButton({
@@ -32,6 +33,7 @@ export function SaveTenderButton({
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
+        track(saved ? "TENDER_UNSAVED" : "TENDER_SAVED", { entityType: "tender", entityId: tenderId, metadata: saved ? { tenderId } : { tenderId, source: "detail" } });
         void toggle(tenderId);
       }}
     >

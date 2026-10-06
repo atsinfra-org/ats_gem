@@ -17,7 +17,7 @@ One codebase, four entrypoints, deployed separately:
 | API | `dist/main.api.js` | HTTP API; produces jobs and outbox events, never consumes queues | `:4000/health/{live,ready,queues}` |
 | Worker | `dist/main.worker.js` | Consumes queues (filter with `WORKER_QUEUES`), runs the outbox relay | `:4001/health/{live,ready}` |
 | Scheduler | `dist/main.scheduler.js` | Reconciles DB schedules into BullMQ job schedulers; runs no jobs itself | `:4002/health/{live,ready}` |
-| CLI | `dist/main.cli.js <cmd>` | One-shot ops commands (`seed`, `crawl`, `schedules:sync`, `queues:status`, `search:reindex`, `search:verify`, `search:purge-events`) | — |
+| CLI | `dist/main.cli.js <cmd>` | One-shot ops commands (`seed`, `crawl`, `schedules:sync`, `queues:status`, `search:reindex`, `search:verify`, `search:purge-events`, `analytics:rollup`, `analytics:purge-events`) | — |
 
 `/health/live` = the process is up (no dependency checks). `/health/ready` = dependencies and
 background loops are OK; **Redis down is a readiness failure (503)**, not a liveness failure.

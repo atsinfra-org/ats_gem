@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { TenderDocumentSummary } from "@/lib/api/types";
 import { documentDownloadUrl } from "@/lib/api/documents";
+import { track } from "@/lib/analytics/client";
 
 const documentTypeLabels: Record<string, string> = {
   NIT: "NIT",
@@ -33,11 +34,11 @@ export function DocumentCard({ tenderId, document: doc, onPreview }: { tenderId:
         </div>
       </div>
       <div className="flex items-center gap-1.5">
-        <Button variant="ghost" size="icon" aria-label={`Preview ${doc.fileName}`} onClick={() => onPreview(doc)}>
+        <Button variant="ghost" size="icon" aria-label={`Preview ${doc.fileName}`} onClick={() => { track("DOCUMENT_VIEWED", { entityType: "tender", entityId: tenderId, metadata: { tenderId, documentId: doc.id, documentType: doc.documentType } }); onPreview(doc); }}>
           <Eye className="h-4 w-4" />
         </Button>
         <Button variant="outline" size="sm" asChild>
-          <a href={downloadUrl} download={doc.fileName}>
+          <a href={downloadUrl} download={doc.fileName} onClick={() => track("DOCUMENT_DOWNLOADED", { entityType: "tender", entityId: tenderId, metadata: { tenderId, documentId: doc.id, documentType: doc.documentType } })}>
             <Download className="h-3.5 w-3.5" /> Download
           </a>
         </Button>

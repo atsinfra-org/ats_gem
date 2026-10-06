@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiErrorState } from "@/components/states/status-error";
 import { useSession } from "@/lib/auth/session-context";
+import { track } from "@/lib/analytics/client";
 import { ApiError } from "@/lib/api/client";
 import {
   getCurrentOrganization,
@@ -57,6 +58,7 @@ export default function CompanyProfilePage() {
       const [o, m] = await Promise.all([getCurrentOrganization(), listMembers()]);
       setOrg(o);
       setMembers(m);
+      track("ORGANIZATION_VIEWED");
       setForm(Object.fromEntries(FIELDS.map((f) => [f.key, (o[f.key as keyof OrganizationDetail] as string | null) ?? ""])));
     } catch (err) {
       setError(err);

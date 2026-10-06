@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { Poppins, Instrument_Serif, IBM_Plex_Mono } from "next/font/google";
+import { RouteTracker } from "@/components/analytics/route-tracker";
+import { ErrorTracker } from "@/components/analytics/error-tracker";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthDialogProvider } from "@/lib/store/auth-dialog-store";
@@ -71,6 +74,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                   {children}
                   <AuthDialog />
                   <SessionExpiredWatcher />
+                  <Suspense fallback={null}>
+                    <RouteTracker />
+                  </Suspense>
+                  <ErrorTracker />
                   <Toaster richColors position="top-right" closeButton />
                 </AuthDialogProvider>
               </NotificationsProvider>

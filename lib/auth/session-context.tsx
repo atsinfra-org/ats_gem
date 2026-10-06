@@ -4,6 +4,7 @@ import * as React from "react";
 import { apiRequest } from "@/lib/api/client";
 import { bootstrapSession, onSessionExpired, setAccessToken } from "@/lib/api/client";
 import { logoutRequest } from "@/lib/api/client";
+import { track } from "@/lib/analytics/client";
 import type { MeProfile } from "@/lib/api/types";
 
 interface SessionValue {
@@ -55,6 +56,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = React.useCallback(async () => {
+    track("LOGOUT");
     await logoutRequest();
     setUser(null);
   }, []);

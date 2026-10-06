@@ -8,6 +8,8 @@ import { TenderAdminCorrection } from "@/components/tender/tender-admin-correcti
 import { TenderInformation } from "@/components/tender/tender-information";
 import { ImportantDates } from "@/components/tender/important-dates";
 import { TenderTabs } from "@/components/tender/tender-tabs";
+import { TenderViewTracker } from "@/components/analytics/tender-view-tracker";
+import { Suspense } from "react";
 import { getTender } from "@/lib/api/tenders";
 import { ApiError } from "@/lib/api/client";
 
@@ -35,6 +37,9 @@ export default async function TenderDetailPage({ params }: { params: Promise<{ i
 
   return (
     <div className="space-y-6">
+      <Suspense fallback={null}>
+        <TenderViewTracker tenderId={id} />
+      </Suspense>
       <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm text-muted-foreground">
         <Link href="/tenders" className="inline-flex items-center gap-1 hover:text-foreground">
           <ChevronLeft className="h-3.5 w-3.5" /> Back to Search Results

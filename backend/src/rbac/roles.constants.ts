@@ -22,6 +22,7 @@ export const PERMISSION_KEYS = [
   'entity.merge',
   'duplicate.review',
   'tender.correct',
+  'analytics.view',
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
@@ -39,10 +40,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<StaffRoleKey, readonly PermissionK
     'entity.merge',
     'duplicate.review',
     'tender.correct',
+    'analytics.view',
   ],
   MODERATOR: ['admin.access', 'tender.flag', 'audit.view', 'duplicate.review'],
   CRAWLER_MANAGER: ['admin.access', 'source.manage'],
-  SUPPORT: ['admin.access', 'organization.view_all'],
+  SUPPORT: ['admin.access', 'organization.view_all', 'analytics.view'],
 };
 
 /**

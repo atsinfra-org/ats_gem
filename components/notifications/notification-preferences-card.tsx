@@ -3,6 +3,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
+import { track } from "@/lib/analytics/client";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -74,6 +75,7 @@ export function NotificationPreferencesCard() {
         deadlineOffsetsHours: draft.deadlineOffsetsHours,
         quietHours: q.enabled ? { enabled: true, start: q.start ?? "22:00", end: q.end ?? "07:00", timezone: q.timezone } : { enabled: false },
       });
+      track("NOTIFICATION_PREFERENCES_UPDATED");
       setSaved(next);
       setDraft(next);
       toast.success("Notification preferences saved");

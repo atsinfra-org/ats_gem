@@ -8,6 +8,7 @@ import { DatabaseModule } from './database/database.module';
 import { LoggingModule } from './logging/logging.module';
 import { MarketModule } from './market/market.module';
 import { HealthModule } from './modules/health/health.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { OutboxModule } from './outbox/outbox.module';
@@ -71,6 +72,7 @@ import { WatchlistModule } from './watchlist/watchlist.module';
     SavedSearchesModule,
     WatchlistModule,
     NotificationsModule,
+    AnalyticsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: RateLimitGuard },

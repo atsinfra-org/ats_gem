@@ -41,7 +41,7 @@ export function TerminalHero({ snapshot, wire }: { snapshot: MarketSnapshot; wir
     [snapshot.states]
   );
 
-  const tendersHref = (s: StateSnapshot) => `/tenders?state=${s.code}`;
+  const tendersHref = (s: StateSnapshot) => `/tenders?state=${encodeURIComponent(s.name)}`;
 
   function openState(s: StateSnapshot) {
     router.push(tendersHref(s));
@@ -56,7 +56,7 @@ export function TerminalHero({ snapshot, wire }: { snapshot: MarketSnapshot; wir
         />
 
         <div className="relative mx-auto max-w-7xl px-4 pb-16 pt-24 sm:px-6 lg:px-8 lg:pb-24">
-          <StatusLine sources={snapshot.sources} lastCrawlAt={snapshot.lastCrawlAt} />
+          <StatusLine sources={snapshot.sources} lastCrawlMinutesAgo={snapshot.lastCrawlMinutesAgo} />
 
           <div className="mt-10 grid gap-x-16 gap-y-12 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
             <div className="min-w-0 lg:col-start-1 lg:row-start-1">
@@ -139,10 +139,7 @@ export function TerminalHero({ snapshot, wire }: { snapshot: MarketSnapshot; wir
                   <div className="mt-3 grid grid-cols-3 gap-4">
                     <Metric label="Live" value={(state?.live ?? snapshot.liveTenders).toLocaleString("en-IN")} />
                     <Metric label="Closing 7d" value={`₹${closingCr.toLocaleString("en-IN")} Cr`} />
-                    <Metric
-                      label="Top buyer"
-                      value={(state ? state.topBuyer : snapshot.topBuyers[0]?.short) ?? "—"}
-                    />
+                    <Metric label="Top buyer" value={state?.topBuyer ?? snapshot.topBuyers[0].short} />
                   </div>
                 </div>
                 <a

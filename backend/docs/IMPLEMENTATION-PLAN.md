@@ -152,12 +152,12 @@ Organizations & teams (invitations, roles), plans + entitlements from the databa
 **Accept when:** replaying the same webhook is a no-op; a forged signature is rejected; hitting a plan limit returns `402 PLAN_LIMIT_REACHED` with usage details; changing a plan limit in the database takes effect without a deploy.
 
 ## Phase 9 — Admin & analytics
-Remaining admin APIs (users, orgs/KYC review, duplicates review, documents, notification deliveries, broadcast, plans, settings), analytics rollups and dashboard endpoints, audit log query API.
+**Renumbered in delivery.** Phase 9 (subscription/billing, Phase 8 above's "Business system") was explicitly skipped by direction; the analytics half of this section was delivered as **Phase 10** instead (ARCHITECTURE Sec 22, API-CONTRACT Sec 15, DATABASE - analytics tables), ahead of the remaining admin APIs listed below, which stay open. Remaining/open: admin APIs for users, orgs/KYC review, duplicates review, documents, notification deliveries, broadcast, plans, settings; an audit-log query API; the full admin dashboard (Phase 12).
 
-**Accept when:** every admin mutation writes an audit log entry with redacted values; dashboard endpoints read only rollups/caches (verified by query logging in tests).
+**Accept when:** every admin mutation writes an audit log entry with redacted values; dashboard endpoints read only rollups/caches (verified by query logging in tests) - satisfied for analytics (Sec 22.6/22.8), open for the remaining admin surface.
 
 ## Phase 10 — Production hardening
-Tiered rate limits, Prometheus metrics and dashboards, error tracking, OpenTelemetry, load tests (k6) for search/detail/auth, DB query review and index tuning, backup/restore runbook, security review (OWASP ASVS L2 checklist), container scanning, runbooks for crawler incidents. (Graceful worker shutdown landed in Phase 1.)
+**Superseded in name only.** "Phase 10" was reassigned to Analytics & Tracking (delivered - see above); the production-hardening work originally planned here remains open under a later phase number: tiered rate limits, Prometheus metrics and dashboards, error tracking, OpenTelemetry, load tests (k6) for search/detail/auth, DB query review and index tuning, backup/restore runbook, security review (OWASP ASVS L2 checklist), container scanning, runbooks for crawler incidents. (Graceful worker shutdown landed in Phase 1.)
 
 **Accept when:** load test targets met (search p95 < 300 ms at 200 RPS; detail p95 < 150 ms cached); restore drill documented; no high-severity findings open.
 

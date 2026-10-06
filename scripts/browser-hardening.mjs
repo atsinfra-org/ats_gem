@@ -38,7 +38,7 @@ async function loginUI(page, { email, password }) {
   await page.goto(FE + "/login", { waitUntil: "networkidle" });
   await page.getByLabel("Email Address").fill(email);
   await page.locator("#login-password").fill(password);
-  await page.locator("form button[type=submit]").click();
+  await page.getByRole("dialog").locator("form button[type=submit]").click();
   await page.waitForURL("**/dashboard", { timeout: 20000 });
 }
 
@@ -328,7 +328,7 @@ await staff.waitForTimeout(1000);
   await old.goto(FE + "/login", { waitUntil: "networkidle" });
   await old.getByLabel("Email Address").fill(email);
   await old.locator("#login-password").fill("changed-password-2");
-  await old.locator("form button[type=submit]").click();
+  await old.getByRole("dialog").locator("form button[type=submit]").click();
   await old.waitForTimeout(1200);
   check("OLD password no longer works", (await old.getByText("Incorrect email or password").count()) === 1);
   await old.context().close();
@@ -393,7 +393,7 @@ await staff.waitForTimeout(500);
 check("Escape closes dialog", (await staff.getByRole("dialog").count()) === 0);
 await staff.goto(FE + "/login", { waitUntil: "networkidle" });
 await staff.getByLabel("Email Address").fill("bad");
-await staff.locator("form button[type=submit]").click();
+await staff.getByRole("dialog").locator("form button[type=submit]").click();
 const emailInvalid = await staff.getByLabel("Email Address").getAttribute("aria-invalid");
 check("form error is announced (aria-invalid or role=alert)", emailInvalid === "true" || (await staff.getByRole("alert").count()) > 0, `aria-invalid=${emailInvalid}`);
 

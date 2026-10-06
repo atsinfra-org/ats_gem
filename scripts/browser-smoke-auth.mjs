@@ -16,13 +16,13 @@ page.on("pageerror", (e) => errs.push(e.message));
 await page.goto(BASE + "/login", { waitUntil: "networkidle" });
 await page.getByLabel("Email Address").fill("staff-smoke@example.com");
 await page.locator("#login-password").fill("wrong-password-here");
-await page.locator('form button[type=submit]').click();
+await page.getByRole("dialog").locator('form button[type=submit]').click();
 await page.waitForTimeout(1500);
 ok("wrong password shows error", (await page.getByText("Incorrect email or password").count()) > 0);
 
 // Correct login
 await page.locator("#login-password").fill("correct-horse-battery");
-await page.locator('form button[type=submit]').click();
+await page.getByRole("dialog").locator('form button[type=submit]').click();
 await page.waitForURL("**/dashboard", { timeout: 15000 }).catch(() => {});
 ok("login -> dashboard", page.url().endsWith("/dashboard"));
 

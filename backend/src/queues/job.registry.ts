@@ -49,6 +49,8 @@ export const JOB_SCHEMAS = {
   'maintenance.outbox-cleanup': empty,
   'maintenance.sources-health-check': empty,
   'maintenance.search-events-purge': empty,
+  'analytics.rollup': empty,
+  'analytics.purge-events': empty,
   'dead-letter.record': z.object({
     queue: z.string(),
     jobName: z.string(),
@@ -112,6 +114,8 @@ export const JOB_DEFINITIONS: { [N in JobName]: JobDefinition<N> } = {
   'maintenance.outbox-cleanup': { queue: QueueName.MAINTENANCE },
   'maintenance.sources-health-check': { queue: QueueName.MAINTENANCE },
   'maintenance.search-events-purge': { queue: QueueName.MAINTENANCE },
+  'analytics.rollup': { queue: QueueName.MAINTENANCE },
+  'analytics.purge-events': { queue: QueueName.MAINTENANCE },
   'dead-letter.record': {
     queue: QueueName.DEAD_LETTER,
     logContext: (p) => ({ originalQueue: p.queue, originalJobName: p.jobName, originalJobId: p.jobId }),

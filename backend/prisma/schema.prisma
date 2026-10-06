@@ -395,6 +395,7 @@ model User {
   notificationPreferences NotificationPreference[]
   notificationSettings    NotificationSettings?
   notificationDeliveries  NotificationDelivery[]
+  analyticsSessions       AnalyticsSession[]
   auditLogsAsActor        AuditLog[]               @relation("AuditLogActor")
 
   @@index([status])
@@ -1393,6 +1394,139 @@ model SearchEvent {
 }
 
 /// One row per reindex/verify run - the observable record behind `search:reindex` and search health.
+// ─── Analytics & tracking (Phase 10) ───────────────────────────────────────────
+
+/// Closed event taxonomy - every producer (frontend beacon or backend job) must use one of these.
+/// Search-specific events stay in `SearchEvent` (Phase 7); this enum deliberately does not repeat them.
+enum AnalyticsEventName {
+  PAGE_VIEW
+  REGISTRATION_STARTED
+  REGISTRATION_COMPLETED
+  EMAIL_VERIFICATION_COMPLETED
+  LOGIN_SUCCESS
+  LOGIN_FAILURE
+  LOGOUT
+  TENDER_VIEWED
+  TENDER_SAVED
+  TENDER_UNSAVED
+  TENDER_SOURCE_OPENED
+  TENDER_CORRIGENDUM_VIEWED
+  TENDER_VERSION_VIEWED
+  DOCUMENT_VIEWED
+  DOCUMENT_DOWNLOADED
+  DOCUMENT_DOWNLOAD_FAILED
+  NOTIFICATION_VIEWED
+  NOTIFICATION_CLICKED
+  NOTIFICATION_PREFERENCES_UPDATED
+  PROFILE_VIEWED
+  PROFILE_UPDATED
+  ORGANIZATION_VIEWED
+  CLIENT_ERROR
+  API_ERROR
+
+  @@map("analytics_event_name")
+}
+
+/// Append-only, high-volume event stream (docs/ARCHITECTURE.md Sec 22). Deliberately no FK to
+/// user/organization/tender: at this volume a foreign key makes both ingestion and retention
+/// (bulk delete) far more expensive for no query benefit - every real query filters by id anyway,
+/// and a dangling id after a hard user/tender delete is acceptable for a historical analytics row
+/// (same trade-off precedent as `search_events`). `sessionId` -> `analytics_sessions` is the one
+/// exception because sessions are Phase-10-owned and low volume by comparison.
+model AnalyticsEvent {
+  id             String             @id @default(uuid(7)) @db.Uuid
+  eventName      AnalyticsEventName @map("event_name")
+  /// Stable per-browser id (random, not derived from any PII); present for both anonymous and authenticated events.
+  anonymousId    String?            @map("anonymous_id")
+  sessionId      String?            @map("session_id") @db.Uuid
+  userId         String?            @map("user_id") @db.Uuid
+  organizationId String?            @map("organization_id") @db.Uuid
+  entityType     String?            @map("entity_type")
+  entityId       String?            @map("entity_id") @db.Uuid
+  /// Pathname only (no query string, no origin) - see AnalyticsIngestService for what is stripped.
+  path           String?
+  /// Closed, bounded, schema-validated per event name (see analytics-event-schemas.ts). Never a raw request body.
+  metadata       Json               @default("{}")
+  /// Client-reported event time, clamped to a small window around receivedAt so a forged value cannot skew rollups.
+  occurredAt     DateTime           @map("occurred_at") @db.Timestamptz(6)
+  receivedAt     DateTime           @default(now()) @map("received_at") @db.Timestamptz(6)
+  correlationId  String?            @map("correlation_id")
+
+  session AnalyticsSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([eventName, occurredAt], map: "analytics_events_name_time_idx")
+  @@index([organizationId, occurredAt], map: "analytics_events_org_time_idx")
+  @@index([userId, occurredAt], map: "analytics_events_user_time_idx")
+  @@index([sessionId], map: "analytics_events_session_idx")
+  @@index([receivedAt], map: "analytics_events_received_idx")
+  @@map("analytics_events")
+}
+
+/// Lightweight session: one row per anonymous browser (or signed-in user) between activity gaps of
+/// ANALYTICS_SESSION_TIMEOUT_MINUTES (default 30). First-touch UTM/referrer attribution only - see
+/// docs/ARCHITECTURE.md Sec 22.5 for why last-touch was not added.
+model AnalyticsSession {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  /// Not unique: an anonymous browser gets a new row each time its previous session timed out (see AnalyticsSessionService).
+  anonymousId    String    @map("anonymous_id")
+  userId         String?   @map("user_id") @db.Uuid
+  startedAt      DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  lastActivityAt DateTime  @default(now()) @map("last_activity_at") @db.Timestamptz(6)
+  endedAt        DateTime? @map("ended_at") @db.Timestamptz(6)
+  landingPath    String?   @map("landing_path")
+  /// Host only (e.g. "google.com"), never the full referrer URL - a full URL can itself carry PII/secrets.
+  referrerHost   String?   @map("referrer_host")
+  utmSource      String?   @map("utm_source")
+  utmMedium      String?   @map("utm_medium")
+  utmCampaign    String?   @map("utm_campaign")
+  utmTerm        String?   @map("utm_term")
+  utmContent     String?   @map("utm_content")
+  pageViewCount  Int       @default(0) @map("page_view_count")
+  eventCount     Int       @default(0) @map("event_count")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user   User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  events AnalyticsEvent[]
+
+  @@index([userId], map: "analytics_sessions_user_idx")
+  @@index([lastActivityAt], map: "analytics_sessions_last_activity_idx")
+  @@index([anonymousId, lastActivityAt(sort: Desc)], map: "analytics_sessions_anon_activity_idx")
+  @@map("analytics_sessions")
+}
+
+/// Deterministic daily counters (docs/ARCHITECTURE.md Sec 22.6), rebuilt idempotently from
+/// `analytics_events` + `search_events` by the nightly rollup job. `dimension` is "global" for
+/// platform-wide totals or an organization id for org-scoped metrics; never a free-form string from a client.
+model AnalyticsDailyRollup {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  date      DateTime @db.Date
+  metric    String
+  dimension String   @default("global")
+  count     Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([date, metric, dimension], map: "analytics_daily_rollups_key")
+  @@index([metric, date], map: "analytics_daily_rollups_metric_date_idx")
+  @@map("analytics_daily_rollups")
+}
+
+/// Observability for `analytics:rollup` / `analytics:purge-events` (mirrors `search_index_runs`).
+model AnalyticsProcessingRun {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  kind        String
+  status      String
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  processed   Int       @default(0)
+  failed      Int       @default(0)
+  details     Json      @default("{}")
+
+  @@index([startedAt(sort: Desc)], map: "analytics_processing_runs_started_idx")
+  @@map("analytics_processing_runs")
+}
+
 model SearchIndexRun {
   id          String    @id @default(uuid(7)) @db.Uuid
   kind        String
