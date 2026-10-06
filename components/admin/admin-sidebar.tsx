@@ -25,7 +25,7 @@ export function AdminSidebar({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex h-full flex-col">
       <Link href="/admin" className="flex items-center gap-2 px-4 py-5" onClick={onNavigate}>
         <span className="text-lg font-bold tracking-tight text-white">
-          ATS <span className="text-[var(--color-primary-on-dark)]">Gem</span>
+          ATS <span className="text-[var(--color-primary-on-dark)]">GeM</span>
         </span>
         <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/70">
           Admin

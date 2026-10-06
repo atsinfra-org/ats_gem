@@ -1,4 +1,4 @@
-# ATS Gem Backend — Implementation Plan
+# ATS GeM Backend — Implementation Plan
 
 Each phase ends in a working, tested, reviewable increment. A phase is **done** only when its acceptance criteria pass in CI (lint, typecheck, unit + integration tests) and its docs/OpenAPI are updated. Work proceeds one phase at a time, with a review checkpoint after each.
 

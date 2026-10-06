@@ -1,4 +1,4 @@
-# ATS Gem Backend — Database Schema Plan
+# ATS GeM Backend — Database Schema Plan
 
 Engine: PostgreSQL 16+ (dev machine has 18) · ORM: Prisma · Extensions: `pg_trgm`, `citext`, `unaccent`.
 

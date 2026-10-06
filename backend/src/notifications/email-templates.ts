@@ -79,7 +79,7 @@ function layout(ctx: RenderContext, l: Layout): { text: string; html: string } {
     ...(l.cta ? ['', `${l.cta.label}: ${l.cta.url}`] : []),
     '',
     '--',
-    'ATS Gem',
+    'ATS GeM',
     l.footerNote,
     `Manage notification preferences: ${prefs}`,
   ].join('\n');
@@ -87,7 +87,7 @@ function layout(ctx: RenderContext, l: Layout): { text: string; html: string } {
   const html = `<!doctype html><html lang="en"><body style="margin:0;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;color:#1f2937">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:8px;overflow:hidden">
-<tr><td style="background:#0f3d6b;color:#ffffff;padding:16px 24px;font-size:18px;font-weight:bold">ATS Gem</td></tr>
+<tr><td style="background:#0f3d6b;color:#ffffff;padding:16px 24px;font-size:18px;font-weight:bold">ATS GeM</td></tr>
 <tr><td style="padding:24px">
 <p style="margin:0 0 12px">${escapeHtml(greeting)}</p>
 <h1 style="margin:0 0 12px;font-size:18px">${escapeHtml(l.heading)}</h1>

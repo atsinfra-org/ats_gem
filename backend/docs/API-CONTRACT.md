@@ -1,4 +1,4 @@
-# ATS Gem Backend — API Contract (v1)
+# ATS GeM Backend — API Contract (v1)
 
 Base URL: `/api/v1` · Format: JSON (UTF-8) · Auth: `Authorization: Bearer <accessToken>` · OpenAPI served at `/api/docs` when `SWAGGER_ENABLED=true`.
 

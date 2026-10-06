@@ -4,7 +4,7 @@ import { HelpCircle, Mail, LogIn } from "lucide-react";
 
 export const metadata: Metadata = {
   title: "Help & Resources",
-  description: "Answers to common questions and ways to get in touch with ATS Gem.",
+  description: "Answers to common questions and ways to get in touch with ATS GeM.",
   alternates: { canonical: "/resources" },
 };
 

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# ATS Gem backend image. One image serves api / worker / scheduler (different commands);
+# ATS GeM backend image. One image serves api / worker / scheduler (different commands);
 # the Playwright crawler gets its own image in Phase 5.
 
 ARG NODE_IMAGE=node:24-alpine

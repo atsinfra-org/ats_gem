@@ -84,7 +84,7 @@ describe('API foundation (e2e)', () => {
 
   it('serves the OpenAPI document', async () => {
     const res = await request(app.getHttpServer()).get('/api/docs/openapi.json').expect(200);
-    expect(res.body.info.title).toBe('ATS Gem API');
+    expect(res.body.info.title).toBe('ATS GeM API');
     expect(Object.keys(res.body.paths)).toEqual(expect.arrayContaining(['/health', '/health/live', '/health/ready', '/health/queues']));
   });
 });

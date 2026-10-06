@@ -1,4 +1,4 @@
-# ATS Gem — Backend
+# ATS GeM — Backend
 
 NestJS 12 · TypeScript 6 (strict) · Prisma 7 + PostgreSQL · Redis + BullMQ · Docker.
 Architecture and contracts live in [`docs/`](./docs): [ARCHITECTURE](./docs/ARCHITECTURE.md) · [DATABASE](./docs/DATABASE.md) · [API-CONTRACT](./docs/API-CONTRACT.md) · [IMPLEMENTATION-PLAN](./docs/IMPLEMENTATION-PLAN.md).

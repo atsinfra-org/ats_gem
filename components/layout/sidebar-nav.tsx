@@ -57,7 +57,7 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 px-4 py-5">
         <Link href="/dashboard" className="text-lg font-bold tracking-tight text-foreground" onClick={onNavigate}>
-          ATS <span className="text-primary">Gem</span>
+          ATS <span className="text-primary">GeM</span>
         </Link>
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto px-3" aria-label="Main navigation">

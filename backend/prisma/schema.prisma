@@ -1,4 +1,4 @@
-// ATS Gem — Prisma schema.
+// ATS GeM — Prisma schema.
 // Tables arrive phase by phase following docs/DATABASE.md. Every model here matches (or is an
 // additive subset of) the documented design; later phases extend them with additive migrations.
 // Postgres extensions are created in raw SQL migrations.

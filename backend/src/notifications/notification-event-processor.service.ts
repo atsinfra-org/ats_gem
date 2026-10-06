@@ -176,8 +176,8 @@ export class NotificationEventProcessor {
 
   private async onSecurityEvent(eventId: string, p: DomainEventPayload<'user.security_event'>): Promise<EventSummary> {
     const copy = {
-      PASSWORD_CHANGED: { title: 'Your password was changed', message: 'The password for your ATS Gem account was just changed and your other sessions were signed out.' },
-      PASSWORD_RESET: { title: 'Your password was reset', message: 'Your ATS Gem password was reset with an emailed link and all sessions were signed out.' },
+      PASSWORD_CHANGED: { title: 'Your password was changed', message: 'The password for your ATS GeM account was just changed and your other sessions were signed out.' },
+      PASSWORD_RESET: { title: 'Your password was reset', message: 'Your ATS GeM password was reset with an emailed link and all sessions were signed out.' },
       EMAIL_VERIFIED: { title: 'Email address verified', message: 'Your email address is now verified.' },
     }[p.kind];
     const isAccount = p.kind === 'EMAIL_VERIFIED';

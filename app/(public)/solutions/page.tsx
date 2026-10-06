@@ -40,7 +40,7 @@ export default function SolutionsPage() {
     <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-2xl text-center">
         <h1 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">Solutions for Every Business</h1>
-        <p className="mt-3 text-muted-foreground">Whichever stage your business is at, ATS Gem adapts to your workflow.</p>
+        <p className="mt-3 text-muted-foreground">Whichever stage your business is at, ATS GeM adapts to your workflow.</p>
       </div>
 
       <div className="mt-12 grid grid-cols-1 gap-6 lg:grid-cols-2">

@@ -49,7 +49,7 @@ export function AuthDialog() {
     <Dialog open={isOpen} onOpenChange={(open) => !open && handleClose()}>
       <DialogContent className="grid max-w-3xl grid-cols-1 gap-0 overflow-hidden p-0 md:grid-cols-2">
         <VisuallyHidden>
-          <DialogTitle>Sign in to ATS Gem</DialogTitle>
+          <DialogTitle>Sign in to ATS GeM</DialogTitle>
         </VisuallyHidden>
 
         <div className="hidden flex-col justify-between bg-[color-mix(in_srgb,var(--color-primary)_6%,var(--color-background))] p-8 md:flex">

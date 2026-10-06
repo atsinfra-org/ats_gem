@@ -35,24 +35,24 @@ const plexMono = IBM_Plex_Mono({
   display: "swap",
 });
 
-const DESCRIPTION = "ATS Gem is a tender discovery platform that helps Indian businesses find, track and organize government and private tenders.";
+const DESCRIPTION = "ATS GeM is a tender discovery platform that helps Indian businesses find, track and organize government and private tenders.";
 
 export const metadata: Metadata = {
   title: {
-    default: "ATS Gem — Find. Track. Win. Tenders.",
-    template: "%s | ATS Gem",
+    default: "ATS GeM — Find. Track. Win. Tenders.",
+    template: "%s | ATS GeM",
   },
   description: DESCRIPTION,
   metadataBase: new URL("https://atsgem.example.com"),
   openGraph: {
-    title: "ATS Gem — Find. Track. Win. Tenders.",
+    title: "ATS GeM — Find. Track. Win. Tenders.",
     description: DESCRIPTION,
-    siteName: "ATS Gem",
+    siteName: "ATS GeM",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "ATS Gem — Find. Track. Win. Tenders.",
+    title: "ATS GeM — Find. Track. Win. Tenders.",
     description: DESCRIPTION,
   },
 };

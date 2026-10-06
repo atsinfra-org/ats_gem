@@ -56,7 +56,7 @@ export function PublicNavbar() {
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         <Link href="/" className="flex items-center gap-2">
           <span className={cn("text-xl font-bold tracking-tight", onDark ? "text-white" : "text-foreground")}>
-            ATS <span className="text-primary">Gem</span>
+            ATS <span className="text-primary">GeM</span>
           </span>
         </Link>
 
@@ -127,7 +127,7 @@ export function PublicNavbar() {
         <SheetContent side="right" className="flex flex-col">
           <SheetHeader>
             <SheetTitle>
-              ATS <span className="text-primary">Gem</span>
+              ATS <span className="text-primary">GeM</span>
             </SheetTitle>
           </SheetHeader>
           <nav className="mt-4 flex flex-col gap-1" aria-label="Mobile navigation">

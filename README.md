@@ -1,4 +1,4 @@
-# ATS Gem — Web Application (frontend)
+# ATS GeM — Web Application (frontend)
 
 Next.js 16 (App Router) + React 19 + Tailwind 4 + Radix UI. Talks to the NestJS backend in [`backend/`](backend/README.md) (see `backend/docs/API-CONTRACT.md`).
 

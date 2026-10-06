@@ -71,7 +71,7 @@ export function configureApp(app: NestExpressApplication): void {
     const document = SwaggerModule.createDocument(
       app,
       new DocumentBuilder()
-        .setTitle('ATS Gem API')
+        .setTitle('ATS GeM API')
         .setDescription('Tender aggregation & procurement intelligence platform. See docs/API-CONTRACT.md.')
         .setVersion('v1')
         .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })

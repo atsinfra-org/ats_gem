@@ -25,7 +25,7 @@ async function main() {
       const { AppConfig } = require("/app/dist/config/app-config.service.js");
       const storage = new LocalStorageProvider(app.get(AppConfig));
       const svc = new DocumentsService(prisma, storage);
-      const body = `BT /F1 18 Tf 72 720 Td (ATS Gem dev fixture ${c}) Tj ET`;
+      const body = `BT /F1 18 Tf 72 720 Td (ATS GeM dev fixture ${c}) Tj ET`;
       const pdf = `%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n4 0 obj<</Length ${body.length}>>stream\n${body}\nendstream endobj\n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n`;
       const doc = await svc.register({ tenderId: a, documentType: b, fileName: c, data: Buffer.from(pdf), declaredMimeType: "application/pdf" });
       console.log(JSON.stringify({ id: doc.id, version: doc.version }));

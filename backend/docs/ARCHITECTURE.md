@@ -1,6 +1,6 @@
-# ATS Gem Backend — Architecture
+# ATS GeM Backend — Architecture
 
-Status: **Approved (2026-09-24)** — Phase 0 implemented · Scope: production backend for the ATS Gem tender aggregation & procurement intelligence platform.
+Status: **Approved (2026-09-24)** — Phase 0 implemented · Scope: production backend for the ATS GeM tender aggregation & procurement intelligence platform.
 
 Companion documents:
 - [DATABASE.md](./DATABASE.md) — schema plan, constraints, indexes

@@ -4,12 +4,12 @@ import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/
 
 export const metadata: Metadata = {
   title: "FAQ",
-  description: "Frequently asked questions about ATS Gem's tender discovery platform.",
+  description: "Frequently asked questions about ATS GeM's tender discovery platform.",
   alternates: { canonical: "/faq" },
 };
 
 const faqs = [
-  { q: "What is ATS Gem?", a: "ATS Gem is a tender discovery platform. It ingests tenders from connected sources into a single searchable, de-duplicated record with structured details and documents." },
+  { q: "What is ATS GeM?", a: "ATS GeM is a tender discovery platform. It ingests tenders from connected sources into a single searchable, de-duplicated record with structured details and documents." },
   { q: "Which sources are connected?", a: "Live portal integrations are not yet available; the platform currently runs on a development data source while production integrations are prepared." },
   { q: "Are alerts and email notifications available?", a: "Not yet. You can save tenders and searches and view in-app notifications, but automated alert delivery by email, SMS or WhatsApp is planned, not live." },
   { q: "Can I download tender documents?", a: "Yes, where a tender has documents attached, they can be opened or downloaded from the tender's Documents tab." },

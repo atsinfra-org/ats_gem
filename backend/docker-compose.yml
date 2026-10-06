@@ -1,4 +1,4 @@
-# ATS Gem — local development stack.
+# ATS GeM — local development stack.
 #
 #   docker compose up -d --build          infrastructure + migrate + seed + api + worker + scheduler
 #   docker compose --profile search up -d also start OpenSearch (needs ~1.5 GB RAM)

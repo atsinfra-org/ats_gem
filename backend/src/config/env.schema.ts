@@ -76,7 +76,7 @@ export const envSchema = z.object({
   HEALTH_PORT: z.coerce.number().int().min(0).max(65535).optional(),
 
   EMAIL_DRIVER: z.enum(['log', 'smtp']).default('log'),
-  EMAIL_FROM: z.string().min(3).default('ATS Gem <no-reply@atsgem.example.com>'),
+  EMAIL_FROM: z.string().min(3).default('ATS GeM <no-reply@atsgem.example.com>'),
 
   SEARCH_PROVIDER: z.enum(['postgres', 'opensearch']).default('postgres'),
   OPENSEARCH_URL: z.url().optional(),

@@ -42,7 +42,7 @@ export function PublicFooter() {
         <div className="grid grid-cols-2 gap-8 lg:grid-cols-6">
           <div className="col-span-2">
             <span className="text-xl font-bold tracking-tight">
-              ATS <span className="text-primary">Gem</span>
+              ATS <span className="text-primary">GeM</span>
             </span>
             <p className="mt-3 max-w-xs text-sm text-white/60">
               Tender intelligence platform helping Indian businesses discover, track and win government &amp; private tenders.
@@ -65,7 +65,7 @@ export function PublicFooter() {
         </div>
 
         <div className="mt-12 flex flex-col gap-4 border-t border-white/10 pt-6 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-white/50">© 2026 ATS Gem. All rights reserved.</p>
+          <p className="text-xs text-white/50">© 2026 ATS GeM. All rights reserved.</p>
           <div className="flex gap-5 text-xs text-white/50">
             <Link href="/terms#privacy" className="hover:text-white">Privacy</Link>
             <Link href="/terms" className="hover:text-white">Terms</Link>

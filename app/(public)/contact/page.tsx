@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 
 export const metadata: Metadata = {
   title: "Contact",
-  description: "Get in touch with the ATS Gem team.",
+  description: "Get in touch with the ATS GeM team.",
   alternates: { canonical: "/contact" },
 };
 
